@@ -162,5 +162,24 @@ go run ./cmd/dev
 By default, all commands run in `dev` no-auth mode (empty `TRAFORATO_JWT_SECRET`).
 Set `TRAFORATO_JWT_SECRET` (and optionally `TRAFORATO_JWT_ISSUER`, `TRAFORATO_JWT_AUDIENCE`) to enable `prod` JWT validation mode.
 
+## Releases
+Tagging a commit as `vX.Y.Z` triggers the release workflow:
+1. Goreleaser publishes cross-platform binaries for:
+   - `traforato-controller`
+   - `traforato-worker`
+2. Docker Buildx publishes a multi-arch image to GHCR for:
+   - `ghcr.io/<owner>/<repo>:vX.Y.Z`
+   - `ghcr.io/<owner>/<repo>:latest`
+
+On pull requests and non-tag pushes to `main`, the same workflow runs in dry-run mode:
+1. Goreleaser snapshot build (`--snapshot --skip=publish`).
+2. Docker multi-arch build without pushing.
+
+Run the released container:
+
+```bash
+docker run --rm -p 8080:8080 ghcr.io/<owner>/<repo>:latest
+```
+
 ## Current Scope
 This is a v1 prototype with in-memory state and a single active controller model.

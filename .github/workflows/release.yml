@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  binaries:
+    name: Binaries
+    runs-on: ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-md
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Goreleaser snapshot (non-tag)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --skip=publish --clean
+
+      - name: Goreleaser release (tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: goreleaser/goreleaser-action@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+
+  docker-image:
+    name: Docker Image
+    runs-on: ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-md
+    needs: binaries
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (dry run, non-tag)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            .
+
+      - name: Login to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push image (tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="${VERSION}" \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --tag "${IMAGE}:${VERSION}" \
+            --tag "${IMAGE}:latest" \
+            .
