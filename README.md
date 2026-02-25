@@ -14,10 +14,10 @@ Core goals:
 ## Architecture
 ```mermaid
 flowchart LR
-  Client["Client"] --> Controller["Controller"]
-  Controller -->|307 redirect| WorkerA["Worker A"]
-  Controller -->|307 redirect| WorkerB["Worker B"]
-  Controller -->|307 redirect| WorkerN["Worker N"]
+  Client["Client"] --> Broker["Broker"]
+  Broker -->|307 redirect| WorkerA["Worker A"]
+  Broker -->|307 redirect| WorkerB["Worker B"]
+  Broker -->|307 redirect| WorkerN["Worker N"]
   WorkerA --> WarmA["Warm Pool Manager"]
   WorkerA --> StateA["In-Memory Sandbox State"]
   WorkerB --> WarmB["Warm Pool Manager"]
@@ -30,19 +30,19 @@ flowchart LR
 ```mermaid
 sequenceDiagram
   participant C as Client
-  participant CT as Controller
+  participant BR as Broker
   participant W as Worker
 
-  C->>CT: POST /sandboxes
-  Note over CT: Prod mode: validate JWT<br/>Dev mode: no JWT checks
-  CT-->>C: 307 Location: worker /sandboxes
+  C->>BR: POST /sandboxes
+  Note over BR: Prod mode: validate JWT<br/>Dev mode: no JWT checks
+  BR-->>C: 307 Location: worker /sandboxes
   C->>W: POST /sandboxes
   Note over W: Enforce auth + ownership in prod
   W-->>C: 201 sandbox metadata
 
-  C->>CT: /sandboxes/{sandbox_id}/...
-  Note over CT: Parse sandbox_id and worker hash<br/>No JWT validation on sandbox-scoped routing
-  CT-->>C: 307 to owning worker
+  C->>BR: /sandboxes/{sandbox_id}/...
+  Note over BR: Parse sandbox_id and worker hash<br/>No JWT validation on sandbox-scoped routing
+  BR-->>C: 307 to owning worker
   C->>W: Follow redirect and execute operation
 ```
 
@@ -74,8 +74,8 @@ sequenceDiagram
 ## Auth Modes
 | Mode | Condition | Behavior |
 |---|---|---|
-| `prod` | JWT secret configured | Controller validates non-sandbox entrypoints; worker validates JWT and enforces ownership. |
-| `dev` | JWT secret missing | Controller and worker skip JWT checks; startup warning and auth-mode metric emitted. |
+| `prod` | JWT secret configured | Broker validates non-sandbox entrypoints; worker validates JWT and enforces ownership. |
+| `dev` | JWT secret missing | Broker and worker skip JWT checks; startup warning and auth-mode metric emitted. |
 
 Required JWT claims in production: `client_id`, `iss`, `aud`, `exp`, `iat`, `jti`.
 Replay protection: in-memory `jti` cache until token expiry.
@@ -98,7 +98,7 @@ Defaults:
 
 ## Telemetry and Logging
 Metrics include utilization, latency, reliability, and `service.auth.mode`.
-Tracing uses W3C context propagation across controller and worker boundaries.
+Tracing uses W3C context propagation across broker and worker boundaries.
 Structured logs (`slog` JSON) include request/trace/span identifiers and avoid secrets.
 
 Label policy is strict: only low-cardinality labels are allowed, and keys like `sandbox_id`, `exec_id`, and raw `client_id` are rejected.
@@ -143,15 +143,15 @@ pre-pull:
 
 YAML parsing is strict (unknown keys fail fast). For overlapping values, the YAML file overrides flag and environment defaults.
 
-Start a controller (defaults to one worker at `http://localhost:8081`):
+Start a broker (defaults to one worker at `http://localhost:8081`):
 
 ```bash
-go run ./cmd/controller
+go run ./cmd/broker
 ```
 
-Optional static worker registration fields on controller include `--worker-hardware-sku` (or `TRAFORATO_CONTROLLER_WORKER_HARDWARE_SKU`).
+Optional static worker registration fields on broker include `--worker-hardware-sku` (or `TRAFORATO_BROKER_WORKER_HARDWARE_SKU`).
 
-Start both controller and worker for local development:
+Start both broker and worker for local development:
 
 ```bash
 go run ./cmd/dev
@@ -165,7 +165,7 @@ Set `TRAFORATO_JWT_SECRET` (and optionally `TRAFORATO_JWT_ISSUER`, `TRAFORATO_JW
 ## Releases
 Tagging a commit as `vX.Y.Z` triggers the release workflow:
 1. Goreleaser publishes cross-platform binaries for:
-   - `traforato-controller`
+   - `traforato-broker`
    - `traforato-worker`
 2. Docker Buildx publishes a multi-arch image to GHCR for:
    - `ghcr.io/<owner>/<repo>:vX.Y.Z`
@@ -182,4 +182,4 @@ docker run --rm -p 8080:8080 ghcr.io/<owner>/<repo>:latest
 ```
 
 ## Current Scope
-This is a v1 prototype with in-memory state and a single active controller model.
+This is a v1 prototype with in-memory state and a single active broker model.

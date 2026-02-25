@@ -1,4 +1,4 @@
-package controller
+package broker
 
 import (
 	"context"
@@ -59,7 +59,7 @@ func NewService(cfg Config) *Service {
 	authModeMetric := 1.0
 	if cfg.Validator.Mode() == auth.ModeDev {
 		authModeMetric = 0
-		cfg.Logger.Warn("auth disabled: running controller in development no-auth mode", "auth_mode", "dev")
+		cfg.Logger.Warn("auth disabled: running broker in development no-auth mode", "auth_mode", "dev")
 	}
 	_ = cfg.Telemetry.SetGauge(telemetry.MetricServiceAuthMode, authModeMetric, nil)
 	return &Service{
@@ -117,7 +117,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	requestID := requestIDFromRequest(r)
 	w.Header().Set("X-Request-Id", requestID)
 	ctx := s.cfg.Telemetry.Extract(r.Context(), r.Header)
-	ctx, span := s.cfg.Telemetry.StartSpan(ctx, "controller.request")
+	ctx, span := s.cfg.Telemetry.StartSpan(ctx, "broker.request")
 	defer span.End()
 	traceID, spanID := telemetry.SpanIDs(ctx)
 	logger := s.cfg.Logger.With(
@@ -182,7 +182,7 @@ func (s *Service) handleSandboxScoped(ctx context.Context, w http.ResponseWriter
 
 func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWriter, r *http.Request, logger *slog.Logger) {
 	placementStart := s.cfg.Clock()
-	ctx, span := s.cfg.Telemetry.StartSpan(ctx, "controller.placement")
+	ctx, span := s.cfg.Telemetry.StartSpan(ctx, "broker.placement")
 	defer span.End()
 
 	if _, err := s.cfg.Validator.Authenticate(ctx, r.Header.Get("Authorization")); err != nil {
@@ -203,7 +203,7 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 		if errors.Is(err, errWorkerHardwareSKUUnavailable) {
 			reason = "no_matching_hardware_sku"
 		}
-		_ = s.cfg.Telemetry.Inc(telemetry.MetricControllerNoCapacityTotal, map[string]string{
+		_ = s.cfg.Telemetry.Inc(telemetry.MetricBrokerNoCapacityTotal, map[string]string{
 			"status_code": "503",
 			"reason":      reason,
 		})
@@ -221,7 +221,7 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 		s.writeError(w, http.StatusInternalServerError, "failed to build redirect URL")
 		return
 	}
-	_ = s.cfg.Telemetry.Observe(telemetry.MetricControllerPlacementDur, s.cfg.Clock().Sub(placementStart).Seconds(), map[string]string{
+	_ = s.cfg.Telemetry.Observe(telemetry.MetricBrokerPlacementDur, s.cfg.Clock().Sub(placementStart).Seconds(), map[string]string{
 		"worker_id": worker.WorkerID,
 		"result":    "ok",
 	})

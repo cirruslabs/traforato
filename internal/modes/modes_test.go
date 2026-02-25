@@ -9,31 +9,31 @@ import (
 	"time"
 
 	"github.com/fedor/traforato/internal/auth"
-	"github.com/fedor/traforato/internal/controller"
+	"github.com/fedor/traforato/internal/broker"
 	"github.com/fedor/traforato/internal/worker"
 )
 
-func TestMissingJWTSecretSwitchesControllerAndWorkerToDevNoAuthMode(t *testing.T) {
+func TestMissingJWTSecretSwitchesBrokerAndWorkerToDevNoAuthMode(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	devValidator := auth.NewValidator("", "traforato", "traforato-api", func() time.Time { return now })
 
-	controllerSvc := controller.NewService(controller.Config{
+	brokerSvc := broker.NewService(broker.Config{
 		Validator: devValidator,
 		Clock:     func() time.Time { return now },
 	})
-	controllerSvc.RegisterWorker(controller.Worker{
+	brokerSvc.RegisterWorker(broker.Worker{
 		WorkerID:  "worker-a",
 		Hostname:  "worker-a.local",
 		BaseURL:   "http://worker-a.local:8081",
 		Available: true,
 	})
 
-	controllerBody, _ := json.Marshal(map[string]any{"image": "ubuntu:24.04", "cpu": 1})
-	controllerReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(controllerBody))
-	controllerRR := httptest.NewRecorder()
-	controllerSvc.Handler().ServeHTTP(controllerRR, controllerReq)
-	if controllerRR.Code != http.StatusTemporaryRedirect {
-		t.Fatalf("expected controller 307 in dev no-auth mode, got %d body=%s", controllerRR.Code, controllerRR.Body.String())
+	brokerBody, _ := json.Marshal(map[string]any{"image": "ubuntu:24.04", "cpu": 1})
+	brokerReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(brokerBody))
+	brokerRR := httptest.NewRecorder()
+	brokerSvc.Handler().ServeHTTP(brokerRR, brokerReq)
+	if brokerRR.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected broker 307 in dev no-auth mode, got %d body=%s", brokerRR.Code, brokerRR.Body.String())
 	}
 
 	workerSvc := worker.NewService(worker.Config{

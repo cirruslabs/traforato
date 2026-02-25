@@ -447,13 +447,13 @@ func TestProxyForwardingAndPortURLDiscovery(t *testing.T) {
 
 	urlReq := newRequest(t, http.MethodGet, "/sandboxes/"+sandboxID+"/ports/"+strconv.Itoa(upstreamPort)+"/url?protocol=https", nil)
 	urlReq.Header.Set("Authorization", nextAuth("client-a"))
-	urlReq.Host = "controller.example.com"
+	urlReq.Host = "broker.example.com"
 	urlRR := httptest.NewRecorder()
 	handler.ServeHTTP(urlRR, urlReq)
 	if urlRR.Code != http.StatusOK {
 		t.Fatalf("expected 200 port url discovery, got %d body=%s", urlRR.Code, urlRR.Body.String())
 	}
-	expectedURL := fmt.Sprintf("https://controller.example.com/sandboxes/%s/proxy/%d", sandboxID, upstreamPort)
+	expectedURL := fmt.Sprintf("https://broker.example.com/sandboxes/%s/proxy/%d", sandboxID, upstreamPort)
 	if got := decodeJSON(t, urlRR)["url"]; got != expectedURL {
 		t.Fatalf("expected discovered URL %s, got %v", expectedURL, got)
 	}
@@ -562,7 +562,7 @@ func TestDevModeNoAuthStillWorksForNewEndpoints(t *testing.T) {
 	}
 
 	urlReq := newRequest(t, http.MethodGet, "/sandboxes/"+sandboxID+"/ports/3000/url?protocol=http", nil)
-	urlReq.Host = "controller.local"
+	urlReq.Host = "broker.local"
 	urlRR := httptest.NewRecorder()
 	handler.ServeHTTP(urlRR, urlReq)
 	if urlRR.Code != http.StatusOK {
