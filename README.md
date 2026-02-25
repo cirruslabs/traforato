@@ -90,5 +90,27 @@ Structured logs (`slog` JSON) include request/trace/span identifiers and avoid s
 
 Label policy is strict: only low-cardinality labels are allowed, and keys like `sandbox_id`, `exec_id`, and raw `client_id` are rejected.
 
+## Running Services
+Start a worker:
+
+```bash
+go run ./cmd/worker
+```
+
+Start a controller (defaults to one worker at `http://localhost:8081`):
+
+```bash
+go run ./cmd/controller
+```
+
+Start both controller and worker for local development:
+
+```bash
+go run ./cmd/dev
+```
+
+By default, all commands run in `dev` no-auth mode (empty `TRAFORETTO_JWT_SECRET`).
+Set `TRAFORETTO_JWT_SECRET` (and optionally `TRAFORETTO_JWT_ISSUER`, `TRAFORETTO_JWT_AUDIENCE`) to enable `prod` JWT validation mode.
+
 ## Current Scope
 This is a v1 prototype with in-memory state and a single active controller model.
