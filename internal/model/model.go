@@ -24,9 +24,14 @@ type CreateSandboxRequest struct {
 type Exec struct {
 	ExecID     string     `json:"exec_id"`
 	SandboxID  string     `json:"sandbox_id"`
+	Runtime    string     `json:"runtime,omitempty"`
 	Status     string     `json:"status"`
 	ExitCode   *int       `json:"exit_code,omitempty"`
 	Command    string     `json:"command,omitempty"`
+	Stdout     string     `json:"stdout,omitempty"`
+	Stderr     string     `json:"stderr,omitempty"`
+	Output     string     `json:"output,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
 	StartedAt  time.Time  `json:"started_at"`
 	Completed  *time.Time `json:"completed_at,omitempty"`
 	StartType  string     `json:"start_type,omitempty"`

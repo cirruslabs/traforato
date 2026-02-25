@@ -51,6 +51,9 @@ type Service struct {
 type sandboxState struct {
 	model.Sandbox
 	files             map[string][]byte
+	dirs              map[string]struct{}
+	fileModTimes      map[string]time.Time
+	dirModTimes       map[string]time.Time
 	tuple             warm.Tuple
 	firstExecRecorded bool
 }
@@ -207,8 +210,32 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		s.handlePutFiles(w, r, principal, sandboxID)
 		return
 	}
+	if len(parts) == 3 && parts[2] == "files" && r.Method == http.MethodGet {
+		s.handleGetFile(w, r, principal, sandboxID)
+		return
+	}
+	if len(parts) == 3 && parts[2] == "files" && r.Method == http.MethodDelete {
+		s.handleDeleteFiles(w, r, principal, sandboxID)
+		return
+	}
+	if len(parts) == 4 && parts[2] == "files" && parts[3] == "stat" && r.Method == http.MethodGet {
+		s.handleGetFileStat(w, r, principal, sandboxID)
+		return
+	}
+	if len(parts) == 4 && parts[2] == "files" && parts[3] == "list" && r.Method == http.MethodGet {
+		s.handleListFiles(w, r, principal, sandboxID)
+		return
+	}
+	if len(parts) == 4 && parts[2] == "files" && parts[3] == "mkdir" && r.Method == http.MethodPost {
+		s.handleMkdirFiles(w, r, principal, sandboxID)
+		return
+	}
 	if len(parts) == 3 && parts[2] == "exec" && r.Method == http.MethodPost {
 		s.handleCreateExec(w, r, principal, sandboxID)
+		return
+	}
+	if len(parts) == 4 && parts[2] == "exec" && parts[3] == "code" && r.Method == http.MethodPost {
+		s.handleRunCode(w, r, principal, sandboxID)
 		return
 	}
 	if len(parts) == 4 && parts[2] == "exec" && parts[3] == "ws" && r.Method == http.MethodGet {
@@ -221,6 +248,14 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 5 && parts[2] == "exec" && parts[4] == "frames" && r.Method == http.MethodGet {
 		s.handleGetFrames(w, r, principal, sandboxID, parts[3])
+		return
+	}
+	if len(parts) >= 4 && parts[2] == "proxy" {
+		s.handleProxy(w, r, principal, sandboxID, parts)
+		return
+	}
+	if len(parts) == 5 && parts[2] == "ports" && parts[4] == "url" && r.Method == http.MethodGet {
+		s.handleGetPortURL(w, r, principal, sandboxID, parts[3])
 		return
 	}
 	s.writeError(w, http.StatusNotFound, "route not found")
@@ -325,7 +360,16 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 	s.sandboxes[sandboxID] = &sandboxState{
 		Sandbox: sbx,
 		files:   make(map[string][]byte),
-		tuple:   tuple,
+		dirs: map[string]struct{}{
+			"/":          {},
+			"/workspace": {},
+		},
+		fileModTimes: make(map[string]time.Time),
+		dirModTimes: map[string]time.Time{
+			"/":          now,
+			"/workspace": now,
+		},
+		tuple: tuple,
 	}
 	s.allocatedCPU += req.CPU
 	s.allocatedMiB += memoryMiB
@@ -439,34 +483,7 @@ func (s *Service) handlePatchLease(w http.ResponseWriter, r *http.Request, princ
 }
 
 func (s *Service) handlePutFiles(w http.ResponseWriter, r *http.Request, principal auth.Principal, sandboxID string) {
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		s.writeError(w, http.StatusBadRequest, "path query parameter is required")
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
-	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "failed to read body")
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	sbx, ok := s.sandboxes[sandboxID]
-	if !ok {
-		s.writeError(w, http.StatusNotFound, "sandbox not found")
-		return
-	}
-	if err := s.ensureOwnership(principal, sbx.OwnerClientID); err != nil {
-		s.writeOwnedError(w, err)
-		return
-	}
-	sbx.files[path] = body
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"sandbox_id": sandboxID,
-		"path":       path,
-		"bytes":      len(body),
-	})
+	s.handleWriteFile(w, r, principal, sandboxID)
 }
 
 func (s *Service) handleCreateExec(w http.ResponseWriter, r *http.Request, principal auth.Principal, sandboxID string) {
