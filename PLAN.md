@@ -133,3 +133,14 @@
 2. Sandbox-scoped controller requests always short-circuit to redirect.
 3. JWT-less mode is explicitly development-only and non-production.
 4. Controller remains single-active, in-memory for v1.
+
+## Implementation Progress
+1. [x] Initialize Go module and project structure.
+2. [x] Implement `sandbox_id` parser/constructor (`sbx_<worker_hash>_<ulid>`).
+3. [x] Implement auth mode switch (`prod` with JWT secret, `dev` without secret).
+4. [x] Implement JWT validation with required claims and in-memory `jti` replay guard.
+5. [ ] Implement worker API surface and ownership enforcement.
+6. [ ] Implement controller routing/redirect semantics and placement.
+7. [ ] Implement warm pool target computation and readiness lifecycle.
+8. [ ] Implement telemetry/tracing/logging fields in handlers.
+9. [ ] Add tests for the listed v1 routing/auth/warm/metric scenarios.
