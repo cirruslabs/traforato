@@ -34,6 +34,9 @@ func (s *Service) handleProxy(w http.ResponseWriter, r *http.Request, principal 
 	upstreamPath := "/"
 	if len(parts) > 4 {
 		upstreamPath = "/" + strings.Join(parts[4:], "/")
+		if strings.HasSuffix(r.URL.Path, "/") {
+			upstreamPath += "/"
+		}
 	}
 
 	target := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}

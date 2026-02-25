@@ -21,8 +21,9 @@ const (
 )
 
 var (
-	errPathMissing = errors.New("path query parameter is required")
-	errPathInvalid = errors.New("path must be an absolute path")
+	errPathMissing      = errors.New("path query parameter is required")
+	errPathInvalid      = errors.New("path must be an absolute path")
+	errPathPointsToFile = errors.New("path points to a file")
 )
 
 type writeFileRequest struct {
@@ -84,7 +85,10 @@ func (s *Service) handleWriteFile(w http.ResponseWriter, r *http.Request, princi
 		return
 	}
 
-	ensureParentDirsLocked(sbx, normalizedPath, now)
+	if err := ensureParentDirsLocked(sbx, normalizedPath, now); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if appendMode {
 		sbx.files[normalizedPath] = append(sbx.files[normalizedPath], content...)
 	} else {
@@ -358,7 +362,7 @@ func (s *Service) handleMkdirFiles(w http.ResponseWriter, r *http.Request, princ
 		return
 	}
 	if _, exists := sbx.files[normalizedPath]; exists {
-		s.writeError(w, http.StatusBadRequest, "path points to a file")
+		s.writeError(w, http.StatusBadRequest, errPathPointsToFile.Error())
 		return
 	}
 	if _, exists := sbx.dirs[normalizedPath]; exists {
@@ -378,7 +382,10 @@ func (s *Service) handleMkdirFiles(w http.ResponseWriter, r *http.Request, princ
 		}
 		createDirectoryLocked(sbx, normalizedPath, now)
 	} else {
-		createDirectoryTreeLocked(sbx, normalizedPath, now)
+		if err := createDirectoryTreeLocked(sbx, normalizedPath, now); err != nil {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	sbx.dirModTimes[parent] = now
 
@@ -520,18 +527,18 @@ func parseBoolQuery(raw string, defaultValue bool) (bool, error) {
 	return parsed, nil
 }
 
-func ensureParentDirsLocked(sbx *sandboxState, filePath string, now time.Time) {
+func ensureParentDirsLocked(sbx *sandboxState, filePath string, now time.Time) error {
 	parent := path.Dir(filePath)
-	createDirectoryTreeLocked(sbx, parent, now)
+	return createDirectoryTreeLocked(sbx, parent, now)
 }
 
-func createDirectoryTreeLocked(sbx *sandboxState, dirPath string, now time.Time) {
+func createDirectoryTreeLocked(sbx *sandboxState, dirPath string, now time.Time) error {
 	if dirPath == "." || dirPath == "" {
-		return
+		return nil
 	}
 	if dirPath == "/" {
 		createDirectoryLocked(sbx, "/", now)
-		return
+		return nil
 	}
 	segments := strings.Split(strings.TrimPrefix(dirPath, "/"), "/")
 	current := ""
@@ -541,8 +548,12 @@ func createDirectoryTreeLocked(sbx *sandboxState, dirPath string, now time.Time)
 			continue
 		}
 		current += "/" + segment
+		if _, exists := sbx.files[current]; exists {
+			return errPathPointsToFile
+		}
 		createDirectoryLocked(sbx, current, now)
 	}
+	return nil
 }
 
 func createDirectoryLocked(sbx *sandboxState, dirPath string, now time.Time) {

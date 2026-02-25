@@ -226,6 +226,21 @@ func TestFilesystemRoundtripStatListAndRemove(t *testing.T) {
 		t.Fatalf("expected bytes_written=5")
 	}
 
+	writeNestedReq := newRequest(t, http.MethodPut, "/sandboxes/"+sandboxID+"/files?path=/workspace/a.txt/child.txt", map[string]any{
+		"content":  "blocked",
+		"encoding": "utf8",
+	})
+	writeNestedReq.Header.Set("Authorization", nextAuth("client-a"))
+	writeNestedRR := httptest.NewRecorder()
+	handler.ServeHTTP(writeNestedRR, writeNestedReq)
+	if writeNestedRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when parent path is a file, got %d body=%s", writeNestedRR.Code, writeNestedRR.Body.String())
+	}
+	writeNestedPayload := decodeJSON(t, writeNestedRR)
+	if writeNestedPayload["error"] != "path points to a file" {
+		t.Fatalf("expected file-parent validation error, got %v", writeNestedPayload["error"])
+	}
+
 	readUTF8Req := newRequest(t, http.MethodGet, "/sandboxes/"+sandboxID+"/files?path=/workspace/a.txt", nil)
 	readUTF8Req.Header.Set("Authorization", nextAuth("client-a"))
 	readUTF8RR := httptest.NewRecorder()
@@ -413,6 +428,21 @@ func TestProxyForwardingAndPortURLDiscovery(t *testing.T) {
 	}
 	if proxyPayload["body"] != "ping" {
 		t.Fatalf("expected proxied body ping, got %v", proxyPayload["body"])
+	}
+
+	proxyTrailingReq := httptest.NewRequest(http.MethodGet, "/sandboxes/"+sandboxID+"/proxy/"+strconv.Itoa(upstreamPort)+"/app/?x=2", nil)
+	proxyTrailingReq.Header.Set("Authorization", nextAuth("client-a"))
+	proxyTrailingRR := httptest.NewRecorder()
+	handler.ServeHTTP(proxyTrailingRR, proxyTrailingReq)
+	if proxyTrailingRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 proxy response with trailing slash, got %d body=%s", proxyTrailingRR.Code, proxyTrailingRR.Body.String())
+	}
+	proxyTrailingPayload := decodeJSON(t, proxyTrailingRR)
+	if proxyTrailingPayload["path"] != "/app/" {
+		t.Fatalf("expected proxied path /app/, got %v", proxyTrailingPayload["path"])
+	}
+	if proxyTrailingPayload["query"] != "x=2" {
+		t.Fatalf("expected proxied query x=2, got %v", proxyTrailingPayload["query"])
 	}
 
 	urlReq := newRequest(t, http.MethodGet, "/sandboxes/"+sandboxID+"/ports/"+strconv.Itoa(upstreamPort)+"/url?protocol=https", nil)
