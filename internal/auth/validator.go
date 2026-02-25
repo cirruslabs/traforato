@@ -70,7 +70,10 @@ func (v *Validator) Authenticate(_ context.Context, authz string) (Principal, er
 			return nil, fmt.Errorf("%w: invalid signing method", ErrUnauthorized)
 		}
 		return v.secret, nil
-	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithTimeFunc(v.nowFn),
+	)
 	if err != nil || !parsed.Valid {
 		return Principal{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}

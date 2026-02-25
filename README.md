@@ -42,16 +42,25 @@ sequenceDiagram
   C->>W: Follow redirect and execute operation
 ```
 
-## API Surface (v1)
+## API Surface (v1.1 additive)
 1. `POST /sandboxes`
 2. `GET /sandboxes/{sandbox_id}`
 3. `PATCH /sandboxes/{sandbox_id}/lease`
 4. `DELETE /sandboxes/{sandbox_id}`
-5. `PUT /sandboxes/{sandbox_id}/files`
-6. `POST /sandboxes/{sandbox_id}/exec`
-7. `GET /sandboxes/{sandbox_id}/exec/{exec_id}`
-8. `GET /sandboxes/{sandbox_id}/exec/{exec_id}/frames`
-9. `GET /sandboxes/{sandbox_id}/exec/ws` (optional, currently not enabled)
+5. `PUT /sandboxes/{sandbox_id}/files?path=...`
+6. `GET /sandboxes/{sandbox_id}/files?path=...`
+7. `DELETE /sandboxes/{sandbox_id}/files?path=...`
+8. `GET /sandboxes/{sandbox_id}/files/stat?path=...`
+9. `GET /sandboxes/{sandbox_id}/files/list?path=...`
+10. `POST /sandboxes/{sandbox_id}/files/mkdir`
+11. `POST /sandboxes/{sandbox_id}/exec`
+12. `POST /sandboxes/{sandbox_id}/exec/code`
+13. `GET /sandboxes/{sandbox_id}/exec/{exec_id}`
+14. `GET /sandboxes/{sandbox_id}/exec/{exec_id}/frames`
+15. `GET /sandboxes/{sandbox_id}/exec/ws` (optional, currently not enabled)
+16. `ANY /sandboxes/{sandbox_id}/proxy/{port}`
+17. `ANY /sandboxes/{sandbox_id}/proxy/{port}/{path...}`
+18. `GET /sandboxes/{sandbox_id}/ports/{port}/url?protocol=http|https|ws|wss`
 
 `POST /sandboxes` accepts optional `hardware_sku` to target placement to workers with that SKU.
 
