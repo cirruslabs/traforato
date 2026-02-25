@@ -1,0 +1,40 @@
+package model
+
+import "time"
+
+type Sandbox struct {
+	SandboxID      string    `json:"sandbox_id"`
+	OwnerClientID  string    `json:"-"`
+	Image          string    `json:"image"`
+	CPU            int       `json:"cpu"`
+	MemoryMiB      int       `json:"memory_mib"`
+	Virtualization string    `json:"virtualization"`
+	CreatedAt      time.Time `json:"created_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+type CreateSandboxRequest struct {
+	Image          string `json:"image"`
+	CPU            int    `json:"cpu"`
+	Virtualization string `json:"virtualization"`
+	TTLSeconds     int    `json:"ttl_seconds"`
+}
+
+type Exec struct {
+	ExecID     string     `json:"exec_id"`
+	SandboxID  string     `json:"sandbox_id"`
+	Status     string     `json:"status"`
+	ExitCode   *int       `json:"exit_code,omitempty"`
+	Command    string     `json:"command,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	Completed  *time.Time `json:"completed_at,omitempty"`
+	StartType  string     `json:"start_type,omitempty"`
+	Frames     []Frame    `json:"-"`
+	HasTTYTime bool       `json:"-"`
+}
+
+type Frame struct {
+	Type      string    `json:"type"`
+	Data      string    `json:"data,omitempty"`
+	Timestamp time.Time `json:"ts"`
+}
