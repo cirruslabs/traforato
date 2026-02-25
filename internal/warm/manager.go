@@ -158,21 +158,22 @@ func (m *Manager) EnsureReady(tuple Tuple) error {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultWarmupTO
 	}
+	if runner == nil {
+		return ErrRunnerUnavailable
+	}
 
 	for i := ready; i < target; i++ {
-		if runner != nil {
-			if err := runner.Provision(tuple); err != nil {
-				return err
-			}
-			if err := runner.Connect(tuple); err != nil {
-				return err
-			}
-			if err := runner.Warmup(tuple, cfg.Script, cfg.Timeout); err != nil {
-				return err
-			}
-			if err := runner.Reconnect(tuple); err != nil {
-				return err
-			}
+		if err := runner.Provision(tuple); err != nil {
+			return err
+		}
+		if err := runner.Connect(tuple); err != nil {
+			return err
+		}
+		if err := runner.Warmup(tuple, cfg.Script, cfg.Timeout); err != nil {
+			return err
+		}
+		if err := runner.Reconnect(tuple); err != nil {
+			return err
 		}
 		m.mu.Lock()
 		m.ready[tuple]++
@@ -290,4 +291,7 @@ func sumTargets(targets map[Tuple]int) int {
 	return sum
 }
 
-var ErrWarmupFailed = errors.New("warmup failed")
+var (
+	ErrWarmupFailed      = errors.New("warmup failed")
+	ErrRunnerUnavailable = errors.New("runner is required")
+)

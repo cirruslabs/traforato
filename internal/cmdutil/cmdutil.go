@@ -87,7 +87,11 @@ func (cfg *AuthConfig) Validator() *auth.Validator {
 }
 
 func NewLogger(service string) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", service)
+	logger, err := NewLoggerWithConfig(service, WorkerLogConfig{})
+	if err != nil {
+		return slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", service)
+	}
+	return logger
 }
 
 func SignalContext() (context.Context, context.CancelFunc) {

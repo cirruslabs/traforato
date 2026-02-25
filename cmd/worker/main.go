@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/fedor/traforetto/internal/cmdutil"
+	"github.com/fedor/traforetto/internal/warm"
 	"github.com/fedor/traforetto/internal/worker"
 )
 
 const (
+	envWorkerConfigPath     = "TRAFORETTO_WORKER_CONFIG"
 	envWorkerListenAddr     = "TRAFORETTO_WORKER_LISTEN_ADDR"
 	envWorkerID             = "TRAFORETTO_WORKER_ID"
 	envWorkerHost           = "TRAFORETTO_WORKER_HOSTNAME"
@@ -36,6 +38,7 @@ func main() {
 func run(args []string) error {
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 
+	configPath := fs.String("file", cmdutil.EnvOrDefault(envWorkerConfigPath, ""), "worker YAML config file")
 	listenAddr := fs.String("listen", cmdutil.EnvOrDefault(envWorkerListenAddr, defaultWorkerListenAddr), "worker listen address")
 	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envWorkerID, defaultWorkerID), "worker ID")
 	workerHost := fs.String("hostname", cmdutil.EnvOrDefault(envWorkerHost, defaultWorkerHost), "worker hostname used for sandbox IDs")
@@ -55,29 +58,60 @@ func run(args []string) error {
 		return fmt.Errorf("unexpected positional args: %v", fs.Args())
 	}
 
-	logger := cmdutil.NewLogger("worker")
-	validator := authCfg.Validator()
-
-	svc := worker.NewService(worker.Config{
+	cfg, err := cmdutil.LoadWorkerConfig(*configPath, cmdutil.WorkerFileConfig{
 		WorkerID:         *workerID,
 		Hostname:         *workerHost,
-		Validator:        validator,
-		Logger:           logger,
 		TotalCores:       *totalCores,
 		TotalMemoryMiB:   *totalMemoryMiB,
 		MaxLiveSandboxes: *maxLiveSandboxes,
 		DefaultTTL:       *defaultTTL,
 	})
+	if err != nil {
+		return err
+	}
+
+	logger, err := cmdutil.NewLoggerWithConfig("worker", cfg.Log)
+	if err != nil {
+		return err
+	}
+
+	validator := authCfg.Validator()
+	warmPool := warm.NewManager(time.Now, nil)
+	for _, target := range cfg.PrePullTargets() {
+		tuple := warm.Tuple{
+			Virtualization: target.Virtualization,
+			Image:          target.Image,
+			CPU:            target.CPU,
+		}
+		warmPool.SetTupleConfig(tuple, target.TargetCount, target.WarmupScript, target.WarmupTimeoutSeconds)
+		if err := warmPool.EnsureReady(tuple); err != nil {
+			logger.Warn("failed to pre-pull image", "image", target.Image, "virtualization", target.Virtualization, "cpu", target.CPU, "error", err)
+		}
+	}
+
+	svc := worker.NewService(worker.Config{
+		WorkerID:         cfg.WorkerID,
+		Hostname:         cfg.Hostname,
+		Validator:        validator,
+		Logger:           logger,
+		TotalCores:       cfg.TotalCores,
+		TotalMemoryMiB:   cfg.TotalMemoryMiB,
+		MaxLiveSandboxes: cfg.MaxLiveSandboxes,
+		DefaultTTL:       cfg.DefaultTTL,
+		WarmPool:         warmPool,
+	})
 
 	logger.Info(
 		"worker configured",
 		"auth_mode", validator.Mode(),
-		"worker_id", *workerID,
-		"hostname", *workerHost,
-		"total_cores", *totalCores,
-		"total_memory_mib", *totalMemoryMiB,
-		"max_live_sandboxes", *maxLiveSandboxes,
-		"default_ttl", defaultTTL.String(),
+		"worker_id", cfg.WorkerID,
+		"hostname", cfg.Hostname,
+		"hardware_sku", cfg.HardwareSKU,
+		"total_cores", cfg.TotalCores,
+		"total_memory_mib", cfg.TotalMemoryMiB,
+		"max_live_sandboxes", cfg.MaxLiveSandboxes,
+		"default_ttl", cfg.DefaultTTL.String(),
+		"pre_pull_images", len(cfg.PrePullTargets()),
 	)
 
 	ctx, stop := cmdutil.SignalContext()

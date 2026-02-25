@@ -15,6 +15,7 @@ const (
 	envControllerWorkerID    = "TRAFORETTO_CONTROLLER_WORKER_ID"
 	envControllerWorkerHost  = "TRAFORETTO_CONTROLLER_WORKER_HOSTNAME"
 	envControllerWorkerBase  = "TRAFORETTO_CONTROLLER_WORKER_BASE_URL"
+	envControllerWorkerSKU   = "TRAFORETTO_CONTROLLER_WORKER_HARDWARE_SKU"
 	defaultControllerAddress = ":8080"
 	defaultWorkerID          = "worker-local"
 	defaultWorkerHost        = "localhost"
@@ -35,6 +36,7 @@ func run(args []string) error {
 	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envControllerWorkerID, defaultWorkerID), "registered worker ID")
 	workerHost := fs.String("worker-hostname", cmdutil.EnvOrDefault(envControllerWorkerHost, defaultWorkerHost), "registered worker hostname")
 	workerBaseURL := fs.String("worker-base-url", cmdutil.EnvOrDefault(envControllerWorkerBase, defaultWorkerBaseURL), "registered worker base URL")
+	workerHardwareSKU := fs.String("worker-hardware-sku", os.Getenv(envControllerWorkerSKU), "registered worker hardware SKU")
 	authCfg := cmdutil.BindAuthFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -55,10 +57,11 @@ func run(args []string) error {
 		Logger:    logger,
 	})
 	svc.RegisterWorker(controller.Worker{
-		WorkerID:  *workerID,
-		Hostname:  *workerHost,
-		BaseURL:   *workerBaseURL,
-		Available: true,
+		WorkerID:    *workerID,
+		Hostname:    *workerHost,
+		BaseURL:     *workerBaseURL,
+		HardwareSKU: *workerHardwareSKU,
+		Available:   true,
 	})
 
 	logger.Info(
@@ -67,6 +70,7 @@ func run(args []string) error {
 		"worker_id", *workerID,
 		"worker_hostname", *workerHost,
 		"worker_base_url", *workerBaseURL,
+		"worker_hardware_sku", *workerHardwareSKU,
 	)
 
 	ctx, stop := cmdutil.SignalContext()

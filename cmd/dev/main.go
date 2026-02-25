@@ -11,10 +11,12 @@ import (
 
 	"github.com/fedor/traforetto/internal/cmdutil"
 	"github.com/fedor/traforetto/internal/controller"
+	"github.com/fedor/traforetto/internal/warm"
 	"github.com/fedor/traforetto/internal/worker"
 )
 
 const (
+	envDevWorkerConfigPath     = "TRAFORETTO_DEV_WORKER_CONFIG"
 	envDevControllerListenAddr = "TRAFORETTO_DEV_CONTROLLER_LISTEN_ADDR"
 	envDevWorkerListenAddr     = "TRAFORETTO_DEV_WORKER_LISTEN_ADDR"
 	envDevWorkerBaseURL        = "TRAFORETTO_DEV_WORKER_BASE_URL"
@@ -42,6 +44,7 @@ func main() {
 func run(args []string) error {
 	fs := flag.NewFlagSet("dev", flag.ContinueOnError)
 
+	workerConfigPath := fs.String("file", cmdutil.EnvOrDefault(envDevWorkerConfigPath, ""), "worker YAML config file")
 	controllerListenAddr := fs.String("controller-listen", cmdutil.EnvOrDefault(envDevControllerListenAddr, defaultDevControllerListenAddr), "controller listen address")
 	workerListenAddr := fs.String("worker-listen", cmdutil.EnvOrDefault(envDevWorkerListenAddr, defaultDevWorkerListenAddr), "worker listen address")
 	workerBaseURL := fs.String("worker-base-url", os.Getenv(envDevWorkerBaseURL), "worker base URL advertised by controller (default: derived from worker-listen)")
@@ -67,9 +70,24 @@ func run(args []string) error {
 		*workerBaseURL = deriveWorkerBaseURL(*workerListenAddr)
 	}
 
-	logger := cmdutil.NewLogger("dev")
-	controllerLogger := logger.With("component", "controller")
-	workerLogger := logger.With("component", "worker")
+	workerCfg, err := cmdutil.LoadWorkerConfig(*workerConfigPath, cmdutil.WorkerFileConfig{
+		WorkerID:         *workerID,
+		Hostname:         *workerHost,
+		TotalCores:       *totalCores,
+		TotalMemoryMiB:   *totalMemoryMiB,
+		MaxLiveSandboxes: *maxLiveSandboxes,
+		DefaultTTL:       *defaultTTL,
+	})
+	if err != nil {
+		return err
+	}
+
+	devLogger := cmdutil.NewLogger("dev")
+	controllerLogger := devLogger.With("component", "controller")
+	workerLogger, err := cmdutil.NewLoggerWithConfig("worker", workerCfg.Log)
+	if err != nil {
+		return err
+	}
 
 	controllerValidator := authCfg.Validator()
 	workerValidator := authCfg.Validator()
@@ -79,31 +97,48 @@ func run(args []string) error {
 		Logger:    controllerLogger,
 	})
 	controllerSvc.RegisterWorker(controller.Worker{
-		WorkerID:  *workerID,
-		Hostname:  *workerHost,
-		BaseURL:   *workerBaseURL,
-		Available: true,
+		WorkerID:    workerCfg.WorkerID,
+		Hostname:    workerCfg.Hostname,
+		BaseURL:     *workerBaseURL,
+		HardwareSKU: workerCfg.HardwareSKU,
+		Available:   true,
 	})
+
+	warmPool := warm.NewManager(time.Now, nil)
+	for _, target := range workerCfg.PrePullTargets() {
+		tuple := warm.Tuple{
+			Virtualization: target.Virtualization,
+			Image:          target.Image,
+			CPU:            target.CPU,
+		}
+		warmPool.SetTupleConfig(tuple, target.TargetCount, target.WarmupScript, target.WarmupTimeoutSeconds)
+		if err := warmPool.EnsureReady(tuple); err != nil {
+			workerLogger.Warn("failed to pre-pull image", "image", target.Image, "virtualization", target.Virtualization, "cpu", target.CPU, "error", err)
+		}
+	}
 
 	workerSvc := worker.NewService(worker.Config{
-		WorkerID:         *workerID,
-		Hostname:         *workerHost,
+		WorkerID:         workerCfg.WorkerID,
+		Hostname:         workerCfg.Hostname,
 		Validator:        workerValidator,
 		Logger:           workerLogger,
-		TotalCores:       *totalCores,
-		TotalMemoryMiB:   *totalMemoryMiB,
-		MaxLiveSandboxes: *maxLiveSandboxes,
-		DefaultTTL:       *defaultTTL,
+		TotalCores:       workerCfg.TotalCores,
+		TotalMemoryMiB:   workerCfg.TotalMemoryMiB,
+		MaxLiveSandboxes: workerCfg.MaxLiveSandboxes,
+		DefaultTTL:       workerCfg.DefaultTTL,
+		WarmPool:         warmPool,
 	})
 
-	logger.Info(
+	devLogger.Info(
 		"dev environment configured",
 		"auth_mode", controllerValidator.Mode(),
 		"controller_addr", *controllerListenAddr,
 		"worker_addr", *workerListenAddr,
-		"worker_id", *workerID,
-		"worker_hostname", *workerHost,
+		"worker_id", workerCfg.WorkerID,
+		"worker_hostname", workerCfg.Hostname,
 		"worker_base_url", *workerBaseURL,
+		"hardware_sku", workerCfg.HardwareSKU,
+		"pre_pull_images", len(workerCfg.PrePullTargets()),
 	)
 
 	signalCtx, stop := cmdutil.SignalContext()

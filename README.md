@@ -97,17 +97,54 @@ Start a worker:
 go run ./cmd/worker
 ```
 
+Or with a YAML config file:
+
+```bash
+go run ./cmd/worker --file ./worker.yaml
+```
+
+Example `worker.yaml`:
+
+```yaml
+worker-id: worker-local
+hostname: localhost
+hardware-sku: cpu-standard
+virtualization: vetu
+
+total-cores: 8
+total-memory-mib: 16384
+max-live-sandboxes: 6
+default-ttl: 30m
+
+log:
+  level: info
+  file: /var/log/traforetto/worker.log
+  rotate-size: 100 MB
+  max-rotations: 10
+
+pre-pull:
+  images:
+    - ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04
+    - alpine:3.20
+```
+
+YAML parsing is strict (unknown keys fail fast). For overlapping values, the YAML file overrides flag and environment defaults.
+
 Start a controller (defaults to one worker at `http://localhost:8081`):
 
 ```bash
 go run ./cmd/controller
 ```
 
+Optional static worker registration fields on controller include `--worker-hardware-sku` (or `TRAFORETTO_CONTROLLER_WORKER_HARDWARE_SKU`).
+
 Start both controller and worker for local development:
 
 ```bash
 go run ./cmd/dev
 ```
+
+`cmd/dev` also accepts the same worker config file via `--file` (or `TRAFORETTO_DEV_WORKER_CONFIG`) and applies it to worker runtime settings, logging, hardware SKU registration, and pre-pull images.
 
 By default, all commands run in `dev` no-auth mode (empty `TRAFORETTO_JWT_SECRET`).
 Set `TRAFORETTO_JWT_SECRET` (and optionally `TRAFORETTO_JWT_ISSUER`, `TRAFORETTO_JWT_AUDIENCE`) to enable `prod` JWT validation mode.

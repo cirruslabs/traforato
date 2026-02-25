@@ -1,21 +1,20 @@
-version: 2
+version: "2"
 
 run:
   timeout: 5m
 
-linters-settings:
-  # Even in Rust you can get away with partial matching,
-  # so make sure that the linter respects the programmer's
-  # intent expressed in the form of "default" case.
-  exhaustive:
-    default-signifies-exhaustive: true
-
-  gosec:
-    excludes:
-      - G115
-
 linters:
-  enable-all: true
+  default: standard
+  settings:
+    # Even in Rust you can get away with partial matching,
+    # so make sure that the linter respects the programmer's
+    # intent expressed in the form of "default" case.
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    gosec:
+      excludes:
+        - G115
   disable:
     # We don't have high-performance requirements at this moment, so sacrificing
     # the code readability for marginal performance gains is not worth it.
@@ -59,12 +58,14 @@ linters:
 
     # We don't care about some of the errors
     - errcheck
+  exclusions:
+    rules:
+      - path: (.+)\.go$
+        text: G115 # integer overflow conversion
+      - path: (.+)\.go$
+        text: ST1003 # should not use underscores in package names
 
 issues:
   # Don't hide multiple issues that belong to one class since GitHub annotations can handle them all nicely.
   max-issues-per-linter: 0
   max-same-issues: 0
-
-  exclude:
-    - G115 # integer overflow conversion
-    - ST1003 # should not use underscores in package names
