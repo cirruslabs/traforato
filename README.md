@@ -15,11 +15,15 @@ Core goals:
 ```mermaid
 flowchart LR
   Client["Client"] --> Controller["Controller"]
-  Controller -->|307 redirect| Worker["Worker"]
-  Worker --> Warm["Warm Pool Manager"]
-  Controller --> Telemetry["Telemetry Recorder"]
-  Worker --> Telemetry
-  Worker --> State["In-Memory Sandbox State"]
+  Controller -->|307 redirect| WorkerA["Worker A"]
+  Controller -->|307 redirect| WorkerB["Worker B"]
+  Controller -->|307 redirect| WorkerN["Worker N"]
+  WorkerA --> WarmA["Warm Pool Manager"]
+  WorkerA --> StateA["In-Memory Sandbox State"]
+  WorkerB --> WarmB["Warm Pool Manager"]
+  WorkerB --> StateB["In-Memory Sandbox State"]
+  WorkerN --> WarmN["Warm Pool Manager"]
+  WorkerN --> StateN["In-Memory Sandbox State"]
 ```
 
 ## Request Routing
