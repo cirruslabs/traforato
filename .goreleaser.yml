@@ -7,9 +7,9 @@ before:
     - go mod download
 
 builds:
-  - id: controller
-    main: ./cmd/controller
-    binary: traforato-controller
+  - id: broker
+    main: ./cmd/broker
+    binary: traforato-broker
     env:
       - CGO_ENABLED=0
     goos:
@@ -34,9 +34,9 @@ builds:
       - arm64
 
 archives:
-  - id: controller
+  - id: broker
     ids:
-      - controller
+      - broker
     name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
   - id: worker
