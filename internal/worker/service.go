@@ -18,6 +18,8 @@ import (
 	"github.com/fedor/traforetto/internal/auth"
 	"github.com/fedor/traforetto/internal/model"
 	"github.com/fedor/traforetto/internal/sandboxid"
+	"github.com/fedor/traforetto/internal/telemetry"
+	"github.com/fedor/traforetto/internal/warm"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -26,6 +28,8 @@ type Config struct {
 	Hostname         string
 	Validator        *auth.Validator
 	Logger           *slog.Logger
+	Telemetry        *telemetry.Recorder
+	WarmPool         *warm.Manager
 	TotalCores       int
 	TotalMemoryMiB   int
 	MaxLiveSandboxes int
@@ -46,7 +50,9 @@ type Service struct {
 
 type sandboxState struct {
 	model.Sandbox
-	files map[string][]byte
+	files             map[string][]byte
+	tuple             warm.Tuple
+	firstExecRecorded bool
 }
 
 func NewService(cfg Config) *Service {
@@ -78,6 +84,29 @@ func NewService(cfg Config) *Service {
 	if cfg.Entropy == nil {
 		cfg.Entropy = rand.Reader
 	}
+	if cfg.Telemetry == nil {
+		cfg.Telemetry = telemetry.NewRecorder(cfg.Validator.Mode())
+	}
+	if cfg.WarmPool == nil {
+		cfg.WarmPool = warm.NewManager(cfg.Clock, nil)
+	}
+
+	authMode := "prod"
+	authModeMetric := 1.0
+	if cfg.Validator.Mode() == auth.ModeDev {
+		authMode = "dev"
+		authModeMetric = 0
+		cfg.Logger.Warn("auth disabled: running worker in development no-auth mode", "auth_mode", authMode)
+	}
+	_ = cfg.Telemetry.SetGauge(telemetry.MetricServiceAuthMode, authModeMetric, nil)
+	_ = cfg.Telemetry.SetGauge(telemetry.MetricWorkerCPUTotal, float64(cfg.TotalCores), map[string]string{
+		"worker_id": cfg.WorkerID,
+	})
+	_ = cfg.Telemetry.SetGauge(telemetry.MetricWorkerMemoryTotal, float64(cfg.TotalMemoryMiB), map[string]string{
+		"worker_id": cfg.WorkerID,
+	})
+	cfg.WarmPool.OnWorkerRegister(cfg.MaxLiveSandboxes)
+
 	return &Service{
 		cfg:       cfg,
 		sandboxes: make(map[string]*sandboxState),
@@ -89,10 +118,54 @@ func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(s.handle)
 }
 
+func (s *Service) HandleSSHDrop(tuple warm.Tuple) error {
+	_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerSSHReconnectsTotal, map[string]string{
+		"worker_id": s.cfg.WorkerID,
+		"cpu":       strconv.Itoa(tuple.CPU),
+	})
+	if err := s.cfg.WarmPool.HandleSSHDrop(tuple); err != nil {
+		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmupFailuresTotal, map[string]string{
+			"worker_id": s.cfg.WorkerID,
+			"cpu":       strconv.Itoa(tuple.CPU),
+			"reason":    "rewarm",
+		})
+		return err
+	}
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerWarmReady, float64(s.cfg.WarmPool.ReadyCount(tuple)), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+		"cpu":       strconv.Itoa(tuple.CPU),
+	})
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerWarmDeficit, float64(s.cfg.WarmPool.WarmDeficit(tuple)), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+		"cpu":       strconv.Itoa(tuple.CPU),
+	})
+	return nil
+}
+
 func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	requestID := requestIDFromRequest(r)
+	w.Header().Set("X-Request-Id", requestID)
+
+	ctx := s.cfg.Telemetry.Extract(r.Context(), r.Header)
+	ctx, span := s.cfg.Telemetry.StartSpan(ctx, "worker.request")
+	defer span.End()
+	traceID, spanID := telemetry.SpanIDs(ctx)
+	logger := s.cfg.Logger.With(
+		"request_id", requestID,
+		"trace_id", traceID,
+		"span_id", spanID,
+		"worker_id", s.cfg.WorkerID,
+		"auth_mode", s.cfg.Validator.Mode(),
+	)
+
 	principal, err := s.cfg.Validator.Authenticate(ctx, r.Header.Get("Authorization"))
 	if err != nil {
+		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerAuthFailuresTotal, map[string]string{
+			"worker_id":   s.cfg.WorkerID,
+			"status_code": strconv.Itoa(http.StatusUnauthorized),
+			"reason":      "jwt",
+		})
+		logger.Warn("authentication failed")
 		s.writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -115,6 +188,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 
 	sandboxID := parts[1]
 	if _, err := sandboxid.Parse(sandboxID); err != nil {
+		logger.Warn("malformed sandbox id", "sandbox_id", sandboxID)
 		s.writeError(w, http.StatusBadRequest, "malformed sandbox_id")
 		return
 	}
@@ -163,6 +237,10 @@ func splitPath(path string) []string {
 }
 
 func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter, r *http.Request, principal auth.Principal) {
+	started := s.cfg.Clock()
+	ctx, span := s.cfg.Telemetry.StartSpan(ctx, "worker.sandbox.create")
+	defer span.End()
+
 	var req model.CreateSandboxRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body")
@@ -177,6 +255,11 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 	}
 	if req.Virtualization == "" {
 		req.Virtualization = "vetu"
+	}
+	tuple := warm.Tuple{
+		Virtualization: req.Virtualization,
+		Image:          req.Image,
+		CPU:            req.CPU,
 	}
 	ttl := s.cfg.DefaultTTL
 	if req.TTLSeconds > 0 {
@@ -226,12 +309,43 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(ttl),
 	}
+	startType := "cold"
+	if s.cfg.WarmPool.ConsumeReady(tuple) {
+		startType = "warm"
+		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmHitTotal, map[string]string{
+			"worker_id": s.cfg.WorkerID,
+			"cpu":       strconv.Itoa(req.CPU),
+		})
+	} else {
+		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmMissTotal, map[string]string{
+			"worker_id": s.cfg.WorkerID,
+			"cpu":       strconv.Itoa(req.CPU),
+		})
+	}
+	s.cfg.WarmPool.RecordDemand(tuple)
+
 	s.sandboxes[sandboxID] = &sandboxState{
 		Sandbox: sbx,
 		files:   make(map[string][]byte),
+		tuple:   tuple,
 	}
 	s.allocatedCPU += req.CPU
 	s.allocatedMiB += memoryMiB
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerCPUAllocated, float64(s.allocatedCPU), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+	})
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerMemoryAllocated, float64(s.allocatedMiB), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+	})
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerSandboxesLive, float64(len(s.sandboxes)), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+	})
+	_ = s.cfg.Telemetry.Observe(telemetry.MetricWorkerReadyDuration, s.cfg.Clock().Sub(started).Seconds(), map[string]string{
+		"worker_id":  s.cfg.WorkerID,
+		"start_type": startType,
+		"cpu":        strconv.Itoa(req.CPU),
+	})
+	_ = ctx
 
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"sandbox_id":     sbx.SandboxID,
@@ -241,7 +355,6 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		"virtualization": sbx.Virtualization,
 		"worker_hash":    workerHash,
 	})
-	_ = ctx
 }
 
 func (s *Service) handleGetSandbox(w http.ResponseWriter, principal auth.Principal, sandboxID string) {
@@ -275,6 +388,30 @@ func (s *Service) handleDeleteSandbox(w http.ResponseWriter, principal auth.Prin
 			delete(s.execs, execID)
 		}
 	}
+	targets := s.cfg.WarmPool.OnSandboxDelete(s.cfg.MaxLiveSandboxes)
+	target := targets[sbx.tuple]
+	ready := s.cfg.WarmPool.ReadyCount(sbx.tuple)
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerCPUAllocated, float64(s.allocatedCPU), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+	})
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerMemoryAllocated, float64(s.allocatedMiB), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+	})
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerSandboxesLive, float64(len(s.sandboxes)), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+	})
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerWarmTarget, float64(target), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+		"cpu":       strconv.Itoa(sbx.CPU),
+	})
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerWarmReady, float64(ready), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+		"cpu":       strconv.Itoa(sbx.CPU),
+	})
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerWarmDeficit, float64(maxInt(target-ready, 0)), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+		"cpu":       strconv.Itoa(sbx.CPU),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -335,6 +472,7 @@ func (s *Service) handlePutFiles(w http.ResponseWriter, r *http.Request, princip
 }
 
 func (s *Service) handleCreateExec(w http.ResponseWriter, r *http.Request, principal auth.Principal, sandboxID string) {
+	started := s.cfg.Clock()
 	sbx, err := s.getOwnedSandbox(principal, sandboxID)
 	if err != nil {
 		s.writeOwnedError(w, err)
@@ -357,6 +495,15 @@ func (s *Service) handleCreateExec(w http.ResponseWriter, r *http.Request, princ
 	now := s.cfg.Clock().UTC()
 	exitCode := 0
 	completed := now.Add(10 * time.Millisecond)
+	s.mu.Lock()
+	if !sbx.firstExecRecorded {
+		sbx.firstExecRecorded = true
+		_ = s.cfg.Telemetry.Observe(telemetry.MetricWorkerFirstExecTTI, now.Sub(sbx.CreatedAt).Seconds(), map[string]string{
+			"worker_id": s.cfg.WorkerID,
+			"cpu":       strconv.Itoa(sbx.CPU),
+		})
+	}
+	s.mu.Unlock()
 	exec := &model.Exec{
 		ExecID:    execID,
 		SandboxID: sbx.SandboxID,
@@ -373,6 +520,14 @@ func (s *Service) handleCreateExec(w http.ResponseWriter, r *http.Request, princ
 	s.mu.Lock()
 	s.execs[execID] = exec
 	s.mu.Unlock()
+	_ = s.cfg.Telemetry.Observe(telemetry.MetricWorkerExecStartDuration, s.cfg.Clock().Sub(started).Seconds(), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+		"cpu":       strconv.Itoa(sbx.CPU),
+	})
+	_ = s.cfg.Telemetry.Observe(telemetry.MetricWorkerExecDuration, completed.Sub(now).Seconds(), map[string]string{
+		"worker_id": s.cfg.WorkerID,
+		"cpu":       strconv.Itoa(sbx.CPU),
+	})
 
 	s.writeJSON(w, http.StatusAccepted, map[string]any{
 		"exec_id": execID,
@@ -478,4 +633,18 @@ func (s *Service) writeJSON(w http.ResponseWriter, code int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func requestIDFromRequest(r *http.Request) string {
+	if requestID := strings.TrimSpace(r.Header.Get("X-Request-Id")); requestID != "" {
+		return requestID
+	}
+	return ulid.Make().String()
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -141,6 +141,6 @@
 4. [x] Implement JWT validation with required claims and in-memory `jti` replay guard.
 5. [x] Implement worker API surface and ownership enforcement.
 6. [x] Implement controller routing/redirect semantics and placement.
-7. [ ] Implement warm pool target computation and readiness lifecycle.
-8. [ ] Implement telemetry/tracing/logging fields in handlers.
+7. [x] Implement warm pool target computation and readiness lifecycle.
+8. [x] Implement telemetry/tracing/logging fields in handlers.
 9. [ ] Add tests for the listed v1 routing/auth/warm/metric scenarios.
