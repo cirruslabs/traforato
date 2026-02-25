@@ -9,15 +9,15 @@ import (
 	"os"
 	"time"
 
+	"github.com/fedor/traforato/internal/broker"
 	"github.com/fedor/traforato/internal/cmdutil"
-	"github.com/fedor/traforato/internal/controller"
 	"github.com/fedor/traforato/internal/warm"
 	"github.com/fedor/traforato/internal/worker"
 )
 
 const (
 	envDevWorkerConfigPath     = "TRAFORATO_DEV_WORKER_CONFIG"
-	envDevControllerListenAddr = "TRAFORATO_DEV_CONTROLLER_LISTEN_ADDR"
+	envDevBrokerListenAddr     = "TRAFORATO_DEV_BROKER_LISTEN_ADDR"
 	envDevWorkerListenAddr     = "TRAFORATO_DEV_WORKER_LISTEN_ADDR"
 	envDevWorkerBaseURL        = "TRAFORATO_DEV_WORKER_BASE_URL"
 	envDevWorkerID             = "TRAFORATO_DEV_WORKER_ID"
@@ -27,11 +27,11 @@ const (
 	envDevWorkerMaxLive        = "TRAFORATO_DEV_WORKER_MAX_LIVE_SANDBOXES"
 	envDevWorkerDefaultTTL     = "TRAFORATO_DEV_WORKER_DEFAULT_TTL"
 
-	defaultDevControllerListenAddr = ":8080"
-	defaultDevWorkerListenAddr     = ":8081"
-	defaultDevWorkerID             = "worker-local"
-	defaultDevWorkerHost           = "localhost"
-	defaultDevWorkerTTL            = 30 * time.Minute
+	defaultDevBrokerListenAddr = ":8080"
+	defaultDevWorkerListenAddr = ":8081"
+	defaultDevWorkerID         = "worker-local"
+	defaultDevWorkerHost       = "localhost"
+	defaultDevWorkerTTL        = 30 * time.Minute
 )
 
 func main() {
@@ -45,9 +45,9 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("dev", flag.ContinueOnError)
 
 	workerConfigPath := fs.String("file", cmdutil.EnvOrDefault(envDevWorkerConfigPath, ""), "worker YAML config file")
-	controllerListenAddr := fs.String("controller-listen", cmdutil.EnvOrDefault(envDevControllerListenAddr, defaultDevControllerListenAddr), "controller listen address")
+	brokerListenAddr := fs.String("broker-listen", cmdutil.EnvOrDefault(envDevBrokerListenAddr, defaultDevBrokerListenAddr), "broker listen address")
 	workerListenAddr := fs.String("worker-listen", cmdutil.EnvOrDefault(envDevWorkerListenAddr, defaultDevWorkerListenAddr), "worker listen address")
-	workerBaseURL := fs.String("worker-base-url", os.Getenv(envDevWorkerBaseURL), "worker base URL advertised by controller (default: derived from worker-listen)")
+	workerBaseURL := fs.String("worker-base-url", os.Getenv(envDevWorkerBaseURL), "worker base URL advertised by broker (default: derived from worker-listen)")
 	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envDevWorkerID, defaultDevWorkerID), "worker ID")
 	workerHost := fs.String("worker-hostname", cmdutil.EnvOrDefault(envDevWorkerHost, defaultDevWorkerHost), "worker hostname used for sandbox IDs")
 	totalCores := fs.Int("total-cores", cmdutil.IntEnvOrDefault(envDevWorkerTotalCores, 0), "worker CPU capacity (0 = runtime default)")
@@ -83,20 +83,20 @@ func run(args []string) error {
 	}
 
 	devLogger := cmdutil.NewLogger("dev")
-	controllerLogger := devLogger.With("component", "controller")
+	brokerLogger := devLogger.With("component", "broker")
 	workerLogger, err := cmdutil.NewLoggerWithConfig("worker", workerCfg.Log)
 	if err != nil {
 		return err
 	}
 
-	controllerValidator := authCfg.Validator()
+	brokerValidator := authCfg.Validator()
 	workerValidator := authCfg.Validator()
 
-	controllerSvc := controller.NewService(controller.Config{
-		Validator: controllerValidator,
-		Logger:    controllerLogger,
+	brokerSvc := broker.NewService(broker.Config{
+		Validator: brokerValidator,
+		Logger:    brokerLogger,
 	})
-	controllerSvc.RegisterWorker(controller.Worker{
+	brokerSvc.RegisterWorker(broker.Worker{
 		WorkerID:    workerCfg.WorkerID,
 		Hostname:    workerCfg.Hostname,
 		BaseURL:     *workerBaseURL,
@@ -131,8 +131,8 @@ func run(args []string) error {
 
 	devLogger.Info(
 		"dev environment configured",
-		"auth_mode", controllerValidator.Mode(),
-		"controller_addr", *controllerListenAddr,
+		"auth_mode", brokerValidator.Mode(),
+		"broker_addr", *brokerListenAddr,
 		"worker_addr", *workerListenAddr,
 		"worker_id", workerCfg.WorkerID,
 		"worker_hostname", workerCfg.Hostname,
@@ -150,10 +150,10 @@ func run(args []string) error {
 	errCh := make(chan error, 2)
 	go func() {
 		errCh <- cmdutil.RunServer(runCtx, cmdutil.ServerConfig{
-			Name:    "controller",
-			Addr:    *controllerListenAddr,
-			Handler: controllerSvc.Handler(),
-			Logger:  controllerLogger,
+			Name:    "broker",
+			Addr:    *brokerListenAddr,
+			Handler: brokerSvc.Handler(),
+			Logger:  brokerLogger,
 		})
 	}()
 	go func() {

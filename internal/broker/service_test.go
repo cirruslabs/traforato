@@ -1,4 +1,4 @@
-package controller
+package broker
 
 import (
 	"bytes"
@@ -13,7 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func makeControllerJWT(t *testing.T, secret, jti string, now time.Time) string {
+func makeBrokerJWT(t *testing.T, secret, jti string, now time.Time) string {
 	t.Helper()
 	claims := jwt.MapClaims{
 		"client_id": "client-a",
@@ -80,7 +80,7 @@ func TestCreateEndpointStillValidatesJWTInProd(t *testing.T) {
 	}
 
 	req2 := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(body))
-	req2.Header.Set("Authorization", "Bearer "+makeControllerJWT(t, "secret", "jti-1", now))
+	req2.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-1", now))
 	rr2 := httptest.NewRecorder()
 	service.Handler().ServeHTTP(rr2, req2)
 	if rr2.Code != http.StatusTemporaryRedirect {
@@ -115,7 +115,7 @@ func TestCreateEndpointTargetsRequestedHardwareSKU(t *testing.T) {
 		"hardware_sku": "gpu-a100",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+makeControllerJWT(t, "secret", "jti-hw-1", now))
+	req.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-hw-1", now))
 	rr := httptest.NewRecorder()
 	service.Handler().ServeHTTP(rr, req)
 
@@ -147,7 +147,7 @@ func TestCreateEndpointReturns503WhenHardwareSKUUnavailable(t *testing.T) {
 		"hardware_sku": "gpu-h100",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+makeControllerJWT(t, "secret", "jti-hw-2", now))
+	req.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-hw-2", now))
 	rr := httptest.NewRecorder()
 	service.Handler().ServeHTTP(rr, req)
 
