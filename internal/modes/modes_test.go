@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
-	"github.com/fedor/traforetto/internal/controller"
-	"github.com/fedor/traforetto/internal/worker"
+	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/controller"
+	"github.com/fedor/traforato/internal/worker"
 )
 
 func TestMissingJWTSecretSwitchesControllerAndWorkerToDevNoAuthMode(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	devValidator := auth.NewValidator("", "traforetto", "traforetto-api", func() time.Time { return now })
+	devValidator := auth.NewValidator("", "traforato", "traforato-api", func() time.Time { return now })
 
 	controllerSvc := controller.NewService(controller.Config{
 		Validator: devValidator,

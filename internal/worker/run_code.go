@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
-	"github.com/fedor/traforetto/internal/model"
-	"github.com/fedor/traforetto/internal/telemetry"
+	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/model"
+	"github.com/fedor/traforato/internal/telemetry"
 )
 
 const (

@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
-	"github.com/fedor/traforetto/internal/model"
-	"github.com/fedor/traforetto/internal/sandboxid"
-	"github.com/fedor/traforetto/internal/telemetry"
-	"github.com/fedor/traforetto/internal/warm"
+	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/model"
+	"github.com/fedor/traforato/internal/sandboxid"
+	"github.com/fedor/traforato/internal/telemetry"
+	"github.com/fedor/traforato/internal/warm"
 	"github.com/oklog/ulid/v2"
 )
 

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/fedor/traforetto/internal/auth"
+	"github.com/fedor/traforato/internal/auth"
 )
 
 func TestAuthModeGauge(t *testing.T) {

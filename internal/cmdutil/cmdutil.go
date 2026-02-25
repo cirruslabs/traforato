@@ -13,17 +13,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
+	"github.com/fedor/traforato/internal/auth"
 )
 
 const (
-	DefaultJWTIssuer      = "traforetto"
-	DefaultJWTAudience    = "traforetto-api"
+	DefaultJWTIssuer      = "traforato"
+	DefaultJWTAudience    = "traforato-api"
 	DefaultShutdownPeriod = 5 * time.Second
 
-	EnvJWTSecret   = "TRAFORETTO_JWT_SECRET"
-	EnvJWTIssuer   = "TRAFORETTO_JWT_ISSUER"
-	EnvJWTAudience = "TRAFORETTO_JWT_AUDIENCE"
+	EnvJWTSecret   = "TRAFORATO_JWT_SECRET"
+	EnvJWTIssuer   = "TRAFORATO_JWT_ISSUER"
+	EnvJWTAudience = "TRAFORATO_JWT_AUDIENCE"
 )
 
 type AuthConfig struct {

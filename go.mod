@@ -1,4 +1,4 @@
-module github.com/fedor/traforetto
+module github.com/fedor/traforato
 
 go 1.24.0
 

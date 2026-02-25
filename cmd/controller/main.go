@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fedor/traforetto/internal/cmdutil"
-	"github.com/fedor/traforetto/internal/controller"
+	"github.com/fedor/traforato/internal/cmdutil"
+	"github.com/fedor/traforato/internal/controller"
 )
 
 const (
-	envControllerListenAddr  = "TRAFORETTO_CONTROLLER_LISTEN_ADDR"
-	envControllerWorkerID    = "TRAFORETTO_CONTROLLER_WORKER_ID"
-	envControllerWorkerHost  = "TRAFORETTO_CONTROLLER_WORKER_HOSTNAME"
-	envControllerWorkerBase  = "TRAFORETTO_CONTROLLER_WORKER_BASE_URL"
-	envControllerWorkerSKU   = "TRAFORETTO_CONTROLLER_WORKER_HARDWARE_SKU"
+	envControllerListenAddr  = "TRAFORATO_CONTROLLER_LISTEN_ADDR"
+	envControllerWorkerID    = "TRAFORATO_CONTROLLER_WORKER_ID"
+	envControllerWorkerHost  = "TRAFORATO_CONTROLLER_WORKER_HOSTNAME"
+	envControllerWorkerBase  = "TRAFORATO_CONTROLLER_WORKER_BASE_URL"
+	envControllerWorkerSKU   = "TRAFORATO_CONTROLLER_WORKER_HARDWARE_SKU"
 	defaultControllerAddress = ":8080"
 	defaultWorkerID          = "worker-local"
 	defaultWorkerHost        = "localhost"

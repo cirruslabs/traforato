@@ -7,20 +7,20 @@ import (
 	"os"
 	"time"
 
-	"github.com/fedor/traforetto/internal/cmdutil"
-	"github.com/fedor/traforetto/internal/warm"
-	"github.com/fedor/traforetto/internal/worker"
+	"github.com/fedor/traforato/internal/cmdutil"
+	"github.com/fedor/traforato/internal/warm"
+	"github.com/fedor/traforato/internal/worker"
 )
 
 const (
-	envWorkerConfigPath     = "TRAFORETTO_WORKER_CONFIG"
-	envWorkerListenAddr     = "TRAFORETTO_WORKER_LISTEN_ADDR"
-	envWorkerID             = "TRAFORETTO_WORKER_ID"
-	envWorkerHost           = "TRAFORETTO_WORKER_HOSTNAME"
-	envWorkerTotalCores     = "TRAFORETTO_WORKER_TOTAL_CORES"
-	envWorkerTotalMemoryMiB = "TRAFORETTO_WORKER_TOTAL_MEMORY_MIB"
-	envWorkerMaxLive        = "TRAFORETTO_WORKER_MAX_LIVE_SANDBOXES"
-	envWorkerDefaultTTL     = "TRAFORETTO_WORKER_DEFAULT_TTL"
+	envWorkerConfigPath     = "TRAFORATO_WORKER_CONFIG"
+	envWorkerListenAddr     = "TRAFORATO_WORKER_LISTEN_ADDR"
+	envWorkerID             = "TRAFORATO_WORKER_ID"
+	envWorkerHost           = "TRAFORATO_WORKER_HOSTNAME"
+	envWorkerTotalCores     = "TRAFORATO_WORKER_TOTAL_CORES"
+	envWorkerTotalMemoryMiB = "TRAFORATO_WORKER_TOTAL_MEMORY_MIB"
+	envWorkerMaxLive        = "TRAFORATO_WORKER_MAX_LIVE_SANDBOXES"
+	envWorkerDefaultTTL     = "TRAFORATO_WORKER_DEFAULT_TTL"
 
 	defaultWorkerListenAddr = ":8081"
 	defaultWorkerID         = "worker-local"

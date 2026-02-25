@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
+	"github.com/fedor/traforato/internal/auth"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -81,7 +81,7 @@ func NewRecorder(mode auth.Mode) *Recorder {
 		counters:   make(map[string]float64),
 		gauges:     make(map[string]float64),
 		propagator: propagation.TraceContext{},
-		tracer:     tp.Tracer("traforetto"),
+		tracer:     tp.Tracer("traforato"),
 		tp:         tp,
 	}
 	authMode := 0.0

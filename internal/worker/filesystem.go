@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
+	"github.com/fedor/traforato/internal/auth"
 )
 
 const (

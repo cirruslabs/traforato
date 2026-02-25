@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
-	"github.com/fedor/traforetto/internal/sandboxid"
+	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/sandboxid"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -17,8 +17,8 @@ func makeControllerJWT(t *testing.T, secret, jti string, now time.Time) string {
 	t.Helper()
 	claims := jwt.MapClaims{
 		"client_id": "client-a",
-		"iss":       "traforetto",
-		"aud":       []string{"traforetto-api"},
+		"iss":       "traforato",
+		"aud":       []string{"traforato-api"},
 		"exp":       now.Add(5 * time.Minute).Unix(),
 		"iat":       now.Add(-1 * time.Minute).Unix(),
 		"jti":       jti,
@@ -34,7 +34,7 @@ func makeControllerJWT(t *testing.T, secret, jti string, now time.Time) string {
 func TestSandboxRoutesRedirectWithoutJWTValidation(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	service := NewService(Config{
-		Validator: auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now }),
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
 		Clock:     func() time.Time { return now },
 	})
 	service.RegisterWorker(Worker{
@@ -61,7 +61,7 @@ func TestSandboxRoutesRedirectWithoutJWTValidation(t *testing.T) {
 func TestCreateEndpointStillValidatesJWTInProd(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	service := NewService(Config{
-		Validator: auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now }),
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
 		Clock:     func() time.Time { return now },
 	})
 	service.RegisterWorker(Worker{
@@ -91,7 +91,7 @@ func TestCreateEndpointStillValidatesJWTInProd(t *testing.T) {
 func TestCreateEndpointTargetsRequestedHardwareSKU(t *testing.T) {
 	now := time.Now().UTC()
 	service := NewService(Config{
-		Validator: auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now }),
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
 		Clock:     func() time.Time { return now },
 	})
 	service.RegisterWorker(Worker{
@@ -130,7 +130,7 @@ func TestCreateEndpointTargetsRequestedHardwareSKU(t *testing.T) {
 func TestCreateEndpointReturns503WhenHardwareSKUUnavailable(t *testing.T) {
 	now := time.Now().UTC()
 	service := NewService(Config{
-		Validator: auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now }),
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
 		Clock:     func() time.Time { return now },
 	})
 	service.RegisterWorker(Worker{

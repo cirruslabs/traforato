@@ -28,7 +28,7 @@ hardware-sku: gpu-a100
 max-live-sandboxes: 7
 default-ttl: 45m
 log:
-  file: /tmp/traforetto-worker.log
+  file: /tmp/traforato-worker.log
   rotate-size: 100 MB
   max-rotations: 10
 pre-pull:
@@ -62,7 +62,7 @@ pre-pull:
 	if cfg.DefaultTTL != 45*time.Minute {
 		t.Fatalf("DefaultTTL mismatch: got %s", cfg.DefaultTTL)
 	}
-	if cfg.Log.File != "/tmp/traforetto-worker.log" {
+	if cfg.Log.File != "/tmp/traforato-worker.log" {
 		t.Fatalf("log.file mismatch: got %q", cfg.Log.File)
 	}
 	if cfg.Log.RotateSize != "100 MB" {

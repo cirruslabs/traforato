@@ -13,8 +13,8 @@ func makeToken(t *testing.T, secret string, now time.Time, override func(*Claims
 	claims := &Claims{
 		ClientID: "client-a",
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "traforetto",
-			Audience:  jwt.ClaimStrings{"traforetto-api"},
+			Issuer:    "traforato",
+			Audience:  jwt.ClaimStrings{"traforato-api"},
 			ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now.Add(-1 * time.Minute)),
 			ID:        "jti-123",
@@ -43,7 +43,7 @@ func TestModeFromSecret(t *testing.T) {
 
 func TestAuthenticateProdSuccessAndReplayGuard(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	validator := NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	token := makeToken(t, "secret", now, nil)
 
 	principal, err := validator.Authenticate(context.Background(), "Bearer "+token)
@@ -61,7 +61,7 @@ func TestAuthenticateProdSuccessAndReplayGuard(t *testing.T) {
 }
 
 func TestAuthenticateDevModeSkipsJWT(t *testing.T) {
-	validator := NewValidator("", "traforetto", "traforetto-api", nil)
+	validator := NewValidator("", "traforato", "traforato-api", nil)
 	if validator.Mode() != ModeDev {
 		t.Fatalf("expected dev mode, got %s", validator.Mode())
 	}
@@ -76,7 +76,7 @@ func TestAuthenticateDevModeSkipsJWT(t *testing.T) {
 
 func TestAuthenticateProdMissingClaims(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	validator := NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	token := makeToken(t, "secret", now, func(claims *Claims) {
 		claims.ClientID = ""
 	})

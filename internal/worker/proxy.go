@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
+	"github.com/fedor/traforato/internal/auth"
 )
 
 func (s *Service) handleProxy(w http.ResponseWriter, r *http.Request, principal auth.Principal, sandboxID string, parts []string) {
@@ -47,7 +47,7 @@ func (s *Service) handleProxy(w http.ResponseWriter, r *http.Request, principal 
 		req.URL.Path = upstreamPath
 		req.URL.RawPath = upstreamPath
 		req.Host = target.Host
-		req.Header.Set("X-Traforetto-Sandbox-Id", sandboxID)
+		req.Header.Set("X-Traforato-Sandbox-Id", sandboxID)
 		req.Header.Set("X-Forwarded-Proto", requestProto(r))
 		req.Header.Set("X-Forwarded-Host", requestHost(r))
 		req.Header.Set("X-Forwarded-Port", requestPort(r))

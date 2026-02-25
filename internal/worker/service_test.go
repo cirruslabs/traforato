@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
-	"github.com/fedor/traforetto/internal/telemetry"
+	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/telemetry"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -18,8 +18,8 @@ func makeJWT(t *testing.T, secret, clientID, jti string, now time.Time) string {
 	t.Helper()
 	claims := jwt.MapClaims{
 		"client_id": clientID,
-		"iss":       "traforetto",
-		"aud":       []string{"traforetto-api"},
+		"iss":       "traforato",
+		"aud":       []string{"traforato-api"},
 		"exp":       now.Add(5 * time.Minute).Unix(),
 		"iat":       now.Add(-1 * time.Minute).Unix(),
 		"jti":       jti,
@@ -84,7 +84,7 @@ func TestWorkerDevModeAllowsNoAuth(t *testing.T) {
 
 func TestWorkerProdModeEnforcesOwnership(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	validator := auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
 		Hostname:       "worker-a.local",
 		Validator:      validator,
@@ -126,7 +126,7 @@ func TestFirstExecTTIMetricEmittedOncePerSandbox(t *testing.T) {
 	telemetryRecorder := telemetry.NewRecorder(auth.ModeProd)
 	t.Cleanup(func() { _ = telemetryRecorder.Shutdown(context.Background()) })
 
-	validator := auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
 		WorkerID:       "worker-a",
 		Hostname:       "worker-a.local",

@@ -1,8 +1,8 @@
-# traforetto
+# traforato
 Prototyping sandboxes optimized for cold start.
 
 ## Overview
-Traforetto is a Go prototype for routing and lifecycle management of short-lived sandboxes.
+Traforato is a Go prototype for routing and lifecycle management of short-lived sandboxes.
 It separates control-plane routing from worker data-plane execution, with warm-pool scheduling and built-in telemetry.
 
 Core goals:
@@ -131,7 +131,7 @@ default-ttl: 30m
 
 log:
   level: info
-  file: /var/log/traforetto/worker.log
+  file: /var/log/traforato/worker.log
   rotate-size: 100 MB
   max-rotations: 10
 
@@ -149,7 +149,7 @@ Start a controller (defaults to one worker at `http://localhost:8081`):
 go run ./cmd/controller
 ```
 
-Optional static worker registration fields on controller include `--worker-hardware-sku` (or `TRAFORETTO_CONTROLLER_WORKER_HARDWARE_SKU`).
+Optional static worker registration fields on controller include `--worker-hardware-sku` (or `TRAFORATO_CONTROLLER_WORKER_HARDWARE_SKU`).
 
 Start both controller and worker for local development:
 
@@ -157,10 +157,10 @@ Start both controller and worker for local development:
 go run ./cmd/dev
 ```
 
-`cmd/dev` also accepts the same worker config file via `--file` (or `TRAFORETTO_DEV_WORKER_CONFIG`) and applies it to worker runtime settings, logging, hardware SKU registration, and pre-pull images.
+`cmd/dev` also accepts the same worker config file via `--file` (or `TRAFORATO_DEV_WORKER_CONFIG`) and applies it to worker runtime settings, logging, hardware SKU registration, and pre-pull images.
 
-By default, all commands run in `dev` no-auth mode (empty `TRAFORETTO_JWT_SECRET`).
-Set `TRAFORETTO_JWT_SECRET` (and optionally `TRAFORETTO_JWT_ISSUER`, `TRAFORETTO_JWT_AUDIENCE`) to enable `prod` JWT validation mode.
+By default, all commands run in `dev` no-auth mode (empty `TRAFORATO_JWT_SECRET`).
+Set `TRAFORATO_JWT_SECRET` (and optionally `TRAFORATO_JWT_ISSUER`, `TRAFORATO_JWT_AUDIENCE`) to enable `prod` JWT validation mode.
 
 ## Current Scope
 This is a v1 prototype with in-memory state and a single active controller model.

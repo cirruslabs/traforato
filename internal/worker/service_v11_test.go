@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fedor/traforetto/internal/auth"
+	"github.com/fedor/traforato/internal/auth"
 )
 
 func createSandboxWithAuth(t *testing.T, handler http.Handler, authHeader string) string {
@@ -32,7 +32,7 @@ func createSandboxWithAuth(t *testing.T, handler http.Handler, authHeader string
 
 func TestRunCodeNodeAndPythonSuccess(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	validator := auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
 		WorkerID:       "worker-a",
 		Hostname:       "worker-a.local",
@@ -101,7 +101,7 @@ func TestRunCodeNodeAndPythonSuccess(t *testing.T) {
 
 func TestRunCodeErrorsAndAsyncMode(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	validator := auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
 		WorkerID:       "worker-a",
 		Hostname:       "worker-a.local",
@@ -194,7 +194,7 @@ func TestRunCodeErrorsAndAsyncMode(t *testing.T) {
 
 func TestFilesystemRoundtripStatListAndRemove(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	validator := auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
 		Hostname:       "worker-a.local",
 		Validator:      validator,
@@ -366,7 +366,7 @@ func TestFilesystemRoundtripStatListAndRemove(t *testing.T) {
 
 func TestProxyForwardingAndPortURLDiscovery(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	validator := auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
 		Hostname:       "worker-a.local",
 		Validator:      validator,
@@ -386,7 +386,7 @@ func TestProxyForwardingAndPortURLDiscovery(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		w.Header().Set("X-Echo-Sandbox", r.Header.Get("X-Traforetto-Sandbox-Id"))
+		w.Header().Set("X-Echo-Sandbox", r.Header.Get("X-Traforato-Sandbox-Id"))
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"method": r.Method,
 			"path":   r.URL.Path,
@@ -461,7 +461,7 @@ func TestProxyForwardingAndPortURLDiscovery(t *testing.T) {
 
 func TestProdOwnershipAppliesToNewEndpoints(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	validator := auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
 		Hostname:       "worker-a.local",
 		Validator:      validator,
