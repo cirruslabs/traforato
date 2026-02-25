@@ -143,4 +143,4 @@
 6. [x] Implement controller routing/redirect semantics and placement.
 7. [x] Implement warm pool target computation and readiness lifecycle.
 8. [x] Implement telemetry/tracing/logging fields in handlers.
-9. [ ] Add tests for the listed v1 routing/auth/warm/metric scenarios.
+9. [x] Add tests for the listed v1 routing/auth/warm/metric scenarios.

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fedor/traforetto/internal/auth"
+	"github.com/fedor/traforetto/internal/telemetry"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -116,5 +118,58 @@ func TestWorkerProdModeEnforcesOwnership(t *testing.T) {
 	handler.ServeHTTP(getOtherRR, getOtherReq)
 	if getOtherRR.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for different client, got %d body=%s", getOtherRR.Code, getOtherRR.Body.String())
+	}
+}
+
+func TestFirstExecTTIMetricEmittedOncePerSandbox(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	telemetryRecorder := telemetry.NewRecorder(auth.ModeProd)
+	t.Cleanup(func() { _ = telemetryRecorder.Shutdown(context.Background()) })
+
+	validator := auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now })
+	svc := NewService(Config{
+		WorkerID:       "worker-a",
+		Hostname:       "worker-a.local",
+		Validator:      validator,
+		Telemetry:      telemetryRecorder,
+		Clock:          func() time.Time { return now },
+		TotalCores:     4,
+		TotalMemoryMiB: 4096,
+	})
+	handler := svc.Handler()
+
+	createReq := newRequest(t, http.MethodPost, "/sandboxes", map[string]any{"image": "ubuntu:24.04", "cpu": 1})
+	createReq.Header.Set("Authorization", "Bearer "+makeJWT(t, "secret", "client-a", "jti-create", now))
+	createRR := httptest.NewRecorder()
+	handler.ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusCreated {
+		t.Fatalf("expected 201 create, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+	sandboxID := decodeJSON(t, createRR)["sandbox_id"].(string)
+
+	execReq1 := newRequest(t, http.MethodPost, "/sandboxes/"+sandboxID+"/exec", map[string]any{"command": "echo hi"})
+	execReq1.Header.Set("Authorization", "Bearer "+makeJWT(t, "secret", "client-a", "jti-exec-1", now))
+	execRR1 := httptest.NewRecorder()
+	handler.ServeHTTP(execRR1, execReq1)
+	if execRR1.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 first exec, got %d", execRR1.Code)
+	}
+
+	execReq2 := newRequest(t, http.MethodPost, "/sandboxes/"+sandboxID+"/exec", map[string]any{"command": "echo hi again"})
+	execReq2.Header.Set("Authorization", "Bearer "+makeJWT(t, "secret", "client-a", "jti-exec-2", now))
+	execRR2 := httptest.NewRecorder()
+	handler.ServeHTTP(execRR2, execReq2)
+	if execRR2.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 second exec, got %d", execRR2.Code)
+	}
+
+	ttiSamples := 0
+	for _, sample := range telemetryRecorder.Samples() {
+		if sample.Name == telemetry.MetricWorkerFirstExecTTI {
+			ttiSamples++
+		}
+	}
+	if ttiSamples != 1 {
+		t.Fatalf("expected one TTI sample, got %d", ttiSamples)
 	}
 }
