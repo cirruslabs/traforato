@@ -75,6 +75,23 @@ func TestWarmupGatingReadiness(t *testing.T) {
 	}
 }
 
+func TestEnsureReadyRequiresRunner(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	tuple := Tuple{Virtualization: "vetu", Image: "ubuntu:24.04", CPU: 2}
+
+	mgr := NewManager(func() time.Time { return now }, nil)
+	mgr.SetTupleConfig(tuple, 1, "echo warm", 30)
+
+	err := mgr.EnsureReady(tuple)
+	if !errors.Is(err, ErrRunnerUnavailable) {
+		t.Fatalf("expected ErrRunnerUnavailable, got %v", err)
+	}
+
+	if got := mgr.ReadyCount(tuple); got != 0 {
+		t.Fatalf("expected ready count 0 when runner is missing, got %d", got)
+	}
+}
+
 func TestSSHDropTriggersRewarm(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	tuple := Tuple{Virtualization: "vetu", Image: "ubuntu:24.04", CPU: 2}
