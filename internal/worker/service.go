@@ -91,12 +91,10 @@ func NewService(cfg Config) *Service {
 		cfg.WarmPool = warm.NewManager(cfg.Clock, nil)
 	}
 
-	authMode := "prod"
 	authModeMetric := 1.0
 	if cfg.Validator.Mode() == auth.ModeDev {
-		authMode = "dev"
 		authModeMetric = 0
-		cfg.Logger.Warn("auth disabled: running worker in development no-auth mode", "auth_mode", authMode)
+		cfg.Logger.Warn("auth disabled: running worker in development no-auth mode", "auth_mode", "dev")
 	}
 	_ = cfg.Telemetry.SetGauge(telemetry.MetricServiceAuthMode, authModeMetric, nil)
 	_ = cfg.Telemetry.SetGauge(telemetry.MetricWorkerCPUTotal, float64(cfg.TotalCores), map[string]string{

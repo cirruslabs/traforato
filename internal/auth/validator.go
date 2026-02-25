@@ -100,13 +100,13 @@ func (v *Validator) Authenticate(_ context.Context, authz string) (Principal, er
 			return Principal{}, fmt.Errorf("%w: invalid audience", ErrUnauthorized)
 		}
 	}
-	if claims.ExpiresAt == nil || claims.ExpiresAt.Time.IsZero() {
+	if claims.ExpiresAt == nil || claims.ExpiresAt.IsZero() {
 		return Principal{}, fmt.Errorf("%w: missing exp claim", ErrUnauthorized)
 	}
 	if !claims.ExpiresAt.After(now) {
 		return Principal{}, fmt.Errorf("%w: expired token", ErrUnauthorized)
 	}
-	if claims.IssuedAt == nil || claims.IssuedAt.Time.IsZero() {
+	if claims.IssuedAt == nil || claims.IssuedAt.IsZero() {
 		return Principal{}, fmt.Errorf("%w: missing iat claim", ErrUnauthorized)
 	}
 	if claims.IssuedAt.After(now.Add(5 * time.Second)) {

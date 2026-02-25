@@ -55,12 +55,10 @@ func NewService(cfg Config) *Service {
 	if cfg.Telemetry == nil {
 		cfg.Telemetry = telemetry.NewRecorder(cfg.Validator.Mode())
 	}
-	authMode := "prod"
 	authModeMetric := 1.0
 	if cfg.Validator.Mode() == auth.ModeDev {
-		authMode = "dev"
 		authModeMetric = 0
-		cfg.Logger.Warn("auth disabled: running controller in development no-auth mode", "auth_mode", authMode)
+		cfg.Logger.Warn("auth disabled: running controller in development no-auth mode", "auth_mode", "dev")
 	}
 	_ = cfg.Telemetry.SetGauge(telemetry.MetricServiceAuthMode, authModeMetric, nil)
 	return &Service{
