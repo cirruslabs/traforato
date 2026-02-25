@@ -88,6 +88,74 @@ func TestCreateEndpointStillValidatesJWTInProd(t *testing.T) {
 	}
 }
 
+func TestCreateEndpointTargetsRequestedHardwareSKU(t *testing.T) {
+	now := time.Now().UTC()
+	service := NewService(Config{
+		Validator: auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now }),
+		Clock:     func() time.Time { return now },
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:    "worker-a",
+		Hostname:    "worker-a.local",
+		BaseURL:     "http://worker-a.local:8081",
+		HardwareSKU: "cpu-standard",
+		Available:   true,
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:    "worker-b",
+		Hostname:    "worker-b.local",
+		BaseURL:     "http://worker-b.local:8081",
+		HardwareSKU: "gpu-a100",
+		Available:   true,
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"image":        "ubuntu:24.04",
+		"cpu":          1,
+		"hardware_sku": "gpu-a100",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+makeControllerJWT(t, "secret", "jti-hw-1", now))
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 with matching hardware_sku, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if location := rr.Header().Get("Location"); location != "http://worker-b.local:8081/sandboxes" {
+		t.Fatalf("expected redirect to gpu worker, got %s", location)
+	}
+}
+
+func TestCreateEndpointReturns503WhenHardwareSKUUnavailable(t *testing.T) {
+	now := time.Now().UTC()
+	service := NewService(Config{
+		Validator: auth.NewValidator("secret", "traforetto", "traforetto-api", func() time.Time { return now }),
+		Clock:     func() time.Time { return now },
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:    "worker-a",
+		Hostname:    "worker-a.local",
+		BaseURL:     "http://worker-a.local:8081",
+		HardwareSKU: "cpu-standard",
+		Available:   true,
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"image":        "ubuntu:24.04",
+		"cpu":          1,
+		"hardware_sku": "gpu-h100",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+makeControllerJWT(t, "secret", "jti-hw-2", now))
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when hardware_sku is unavailable, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestMalformedAndUnknownSandboxRoutes(t *testing.T) {
 	service := NewService(Config{
 		Validator: auth.NewValidator("", "", "", nil),

@@ -53,6 +53,8 @@ sequenceDiagram
 8. `GET /sandboxes/{sandbox_id}/exec/{exec_id}/frames`
 9. `GET /sandboxes/{sandbox_id}/exec/ws` (optional, currently not enabled)
 
+`POST /sandboxes` accepts optional `hardware_sku` to target placement to workers with that SKU.
+
 `sandbox_id` format:
 `sbx_<md5(lowercase(worker_hostname))>_<ulid>`
 

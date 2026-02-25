@@ -17,6 +17,7 @@ type CreateSandboxRequest struct {
 	Image          string `json:"image"`
 	CPU            int    `json:"cpu"`
 	Virtualization string `json:"virtualization"`
+	HardwareSKU    string `json:"hardware_sku,omitempty"`
 	TTLSeconds     int    `json:"ttl_seconds"`
 }
 

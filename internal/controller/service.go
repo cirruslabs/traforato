@@ -20,11 +20,12 @@ import (
 )
 
 type Worker struct {
-	WorkerID  string
-	Hostname  string
-	BaseURL   string
-	Hash      string
-	Available bool
+	WorkerID    string
+	Hostname    string
+	BaseURL     string
+	Hash        string
+	HardwareSKU string
+	Available   bool
 }
 
 type Config struct {
@@ -71,6 +72,7 @@ func (s *Service) RegisterWorker(worker Worker) {
 	if worker.Hash == "" {
 		worker.Hash = sandboxid.WorkerHash(worker.Hostname)
 	}
+	worker.HardwareSKU = strings.TrimSpace(worker.HardwareSKU)
 	if !worker.Available {
 		worker.Available = true
 	}
@@ -193,18 +195,25 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 		s.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	_ = req
+	req.HardwareSKU = strings.TrimSpace(req.HardwareSKU)
 
-	worker, err := s.pickWorker()
+	worker, err := s.pickWorker(req.HardwareSKU)
 	if err != nil {
+		reason := "no_worker"
+		if errors.Is(err, errWorkerHardwareSKUUnavailable) {
+			reason = "no_matching_hardware_sku"
+		}
 		_ = s.cfg.Telemetry.Inc(telemetry.MetricControllerNoCapacityTotal, map[string]string{
 			"status_code": "503",
-			"reason":      "no_worker",
+			"reason":      reason,
 		})
 		s.writeError(w, http.StatusServiceUnavailable, "no placement capacity")
 		return
 	}
 	logger = logger.With("worker_id", worker.WorkerID)
+	if req.HardwareSKU != "" {
+		logger = logger.With("hardware_sku", req.HardwareSKU)
+	}
 	logger.Info("redirecting create request to worker")
 
 	target, err := url.JoinPath(worker.BaseURL, "/sandboxes")
@@ -221,8 +230,10 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 }
 
 var (
-	errWorkerUnknown     = errors.New("worker unknown")
-	errWorkerUnavailable = errors.New("worker unavailable")
+	errWorkerUnknown                = errors.New("worker unknown")
+	errWorkerUnavailable            = errors.New("worker unavailable")
+	errNoAvailableWorkers           = errors.New("no available workers")
+	errWorkerHardwareSKUUnavailable = errors.New("requested hardware_sku unavailable")
 )
 
 func (s *Service) workerByHash(hash string) (Worker, error) {
@@ -238,15 +249,25 @@ func (s *Service) workerByHash(hash string) (Worker, error) {
 	return worker, nil
 }
 
-func (s *Service) pickWorker() (Worker, error) {
+func (s *Service) pickWorker(hardwareSKU string) (Worker, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	hardwareSKU = strings.TrimSpace(hardwareSKU)
+	hasAvailable := false
 	for _, worker := range s.workers {
-		if worker.Available {
-			return worker, nil
+		if !worker.Available {
+			continue
 		}
+		hasAvailable = true
+		if hardwareSKU != "" && worker.HardwareSKU != hardwareSKU {
+			continue
+		}
+		return worker, nil
 	}
-	return Worker{}, errors.New("no available workers")
+	if hardwareSKU != "" && hasAvailable {
+		return Worker{}, errWorkerHardwareSKUUnavailable
+	}
+	return Worker{}, errNoAvailableWorkers
 }
 
 func buildRedirectURL(baseURL string, requestURL *url.URL) (string, error) {
