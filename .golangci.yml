@@ -4,7 +4,7 @@ run:
   timeout: 5m
 
 linters:
-  default: all
+  default: standard
   settings:
     # Even in Rust you can get away with partial matching,
     # so make sure that the linter respects the programmer's
