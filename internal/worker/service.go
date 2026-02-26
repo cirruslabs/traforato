@@ -628,15 +628,6 @@ func (s *Service) handleCreateExec(w http.ResponseWriter, r *http.Request, princ
 	now := s.cfg.Clock().UTC()
 	exitCode := 0
 	completed := now.Add(10 * time.Millisecond)
-	s.mu.Lock()
-	if !sbx.firstExecRecorded {
-		sbx.firstExecRecorded = true
-		_ = s.cfg.Telemetry.Observe(telemetry.MetricWorkerFirstExecTTI, now.Sub(sbx.CreatedAt).Seconds(), map[string]string{
-			"worker_id": s.cfg.WorkerID,
-			"cpu":       strconv.Itoa(sbx.CPU),
-		})
-	}
-	s.mu.Unlock()
 	exec := &model.Exec{
 		ExecID:    execID,
 		SandboxID: sbx.SandboxID,
@@ -651,6 +642,13 @@ func (s *Service) handleCreateExec(w http.ResponseWriter, r *http.Request, princ
 		},
 	}
 	s.mu.Lock()
+	if !sbx.firstExecRecorded {
+		sbx.firstExecRecorded = true
+		_ = s.cfg.Telemetry.Observe(telemetry.MetricWorkerFirstExecTTI, now.Sub(sbx.CreatedAt).Seconds(), map[string]string{
+			"worker_id": s.cfg.WorkerID,
+			"cpu":       strconv.Itoa(sbx.CPU),
+		})
+	}
 	s.execs[execID] = exec
 	s.mu.Unlock()
 	_ = s.cfg.Telemetry.Observe(telemetry.MetricWorkerExecStartDuration, s.cfg.Clock().Sub(started).Seconds(), map[string]string{
