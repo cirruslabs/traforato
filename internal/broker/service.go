@@ -745,7 +745,6 @@ func (s *Service) authenticateInternalWorkerJWT(ctx context.Context, r *http.Req
 	if claims.IssuedAt.After(s.cfg.Clock().Add(5 * time.Second)) {
 		return jwt.RegisteredClaims{}, errors.New("iat in future")
 	}
-	_ = ctx
 	return claims, nil
 }
 

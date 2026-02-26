@@ -501,8 +501,6 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 			Timestamp:      now,
 		})
 	}
-	_ = ctx
-
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"sandbox_id":     sbx.SandboxID,
 		"expires_at":     sbx.ExpiresAt,
