@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/fedor/traforato/internal/auth"
-	"github.com/fedor/traforato/internal/sandboxid"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -34,18 +33,18 @@ func makeBrokerJWT(t *testing.T, secret, jti string, now time.Time) string {
 func TestSandboxRoutesRedirectWithoutJWTValidation(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	service := NewService(Config{
+		BrokerID:  "broker_local",
 		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
 		Clock:     func() time.Time { return now },
 	})
 	service.RegisterWorker(Worker{
-		WorkerID:  "worker-a",
+		WorkerID:  "worker_a",
 		Hostname:  "worker-a.local",
 		BaseURL:   "http://worker-a.local:8081",
 		Available: true,
 	})
 
-	hash := sandboxid.WorkerHash("worker-a.local")
-	sandboxID := "sbx_" + hash + "_01HZYXW2A3BCDEF4GHJKMNPQRS"
+	sandboxID := "sbx-broker_local-worker_a-550e8400-e29b-41d4-a716-446655440000"
 	req := httptest.NewRequest(http.MethodGet, "/sandboxes/"+sandboxID, nil)
 	rr := httptest.NewRecorder()
 
@@ -61,11 +60,12 @@ func TestSandboxRoutesRedirectWithoutJWTValidation(t *testing.T) {
 func TestCreateEndpointStillValidatesJWTInProd(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	service := NewService(Config{
+		BrokerID:  "broker_local",
 		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
 		Clock:     func() time.Time { return now },
 	})
 	service.RegisterWorker(Worker{
-		WorkerID:  "worker-a",
+		WorkerID:  "worker_a",
 		Hostname:  "worker-a.local",
 		BaseURL:   "http://worker-a.local:8081",
 		Available: true,
@@ -91,18 +91,19 @@ func TestCreateEndpointStillValidatesJWTInProd(t *testing.T) {
 func TestCreateEndpointTargetsRequestedHardwareSKU(t *testing.T) {
 	now := time.Now().UTC()
 	service := NewService(Config{
+		BrokerID:  "broker_local",
 		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
 		Clock:     func() time.Time { return now },
 	})
 	service.RegisterWorker(Worker{
-		WorkerID:    "worker-a",
+		WorkerID:    "worker_a",
 		Hostname:    "worker-a.local",
 		BaseURL:     "http://worker-a.local:8081",
 		HardwareSKU: "cpu-standard",
 		Available:   true,
 	})
 	service.RegisterWorker(Worker{
-		WorkerID:    "worker-b",
+		WorkerID:    "worker_b",
 		Hostname:    "worker-b.local",
 		BaseURL:     "http://worker-b.local:8081",
 		HardwareSKU: "gpu-a100",
@@ -130,11 +131,12 @@ func TestCreateEndpointTargetsRequestedHardwareSKU(t *testing.T) {
 func TestCreateEndpointReturns503WhenHardwareSKUUnavailable(t *testing.T) {
 	now := time.Now().UTC()
 	service := NewService(Config{
+		BrokerID:  "broker_local",
 		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
 		Clock:     func() time.Time { return now },
 	})
 	service.RegisterWorker(Worker{
-		WorkerID:    "worker-a",
+		WorkerID:    "worker_a",
 		Hostname:    "worker-a.local",
 		BaseURL:     "http://worker-a.local:8081",
 		HardwareSKU: "cpu-standard",
@@ -158,10 +160,11 @@ func TestCreateEndpointReturns503WhenHardwareSKUUnavailable(t *testing.T) {
 
 func TestMalformedAndUnknownSandboxRoutes(t *testing.T) {
 	service := NewService(Config{
+		BrokerID:  "broker_local",
 		Validator: auth.NewValidator("", "", "", nil),
 	})
 	service.RegisterWorker(Worker{
-		WorkerID:  "worker-a",
+		WorkerID:  "worker_a",
 		Hostname:  "worker-a.local",
 		BaseURL:   "http://worker-a.local:8081",
 		Available: true,
@@ -174,10 +177,17 @@ func TestMalformedAndUnknownSandboxRoutes(t *testing.T) {
 		t.Fatalf("expected 400 for malformed id, got %d", malformedRR.Code)
 	}
 
-	unknownReq := httptest.NewRequest(http.MethodGet, "/sandboxes/sbx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_01HZYXW2A3BCDEF4GHJKMNPQRS", nil)
+	unknownReq := httptest.NewRequest(http.MethodGet, "/sandboxes/sbx-broker_local-worker_unknown-550e8400-e29b-41d4-a716-446655440000", nil)
 	unknownRR := httptest.NewRecorder()
 	service.Handler().ServeHTTP(unknownRR, unknownReq)
 	if unknownRR.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for unknown hash, got %d", unknownRR.Code)
+		t.Fatalf("expected 404 for unknown worker id, got %d", unknownRR.Code)
+	}
+
+	brokerMismatchReq := httptest.NewRequest(http.MethodGet, "/sandboxes/sbx-broker_other-worker_a-550e8400-e29b-41d4-a716-446655440000", nil)
+	brokerMismatchRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(brokerMismatchRR, brokerMismatchReq)
+	if brokerMismatchRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for broker mismatch, got %d", brokerMismatchRR.Code)
 	}
 }

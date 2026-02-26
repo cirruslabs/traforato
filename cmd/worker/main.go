@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fedor/traforato/internal/cmdutil"
+	"github.com/fedor/traforato/internal/sandboxid"
 	"github.com/fedor/traforato/internal/warm"
 	"github.com/fedor/traforato/internal/worker"
 )
@@ -15,6 +16,7 @@ import (
 const (
 	envWorkerConfigPath     = "TRAFORATO_WORKER_CONFIG"
 	envWorkerListenAddr     = "TRAFORATO_WORKER_LISTEN_ADDR"
+	envWorkerBrokerID       = "TRAFORATO_WORKER_BROKER_ID"
 	envWorkerID             = "TRAFORATO_WORKER_ID"
 	envWorkerHost           = "TRAFORATO_WORKER_HOSTNAME"
 	envWorkerTotalCores     = "TRAFORATO_WORKER_TOTAL_CORES"
@@ -23,7 +25,8 @@ const (
 	envWorkerDefaultTTL     = "TRAFORATO_WORKER_DEFAULT_TTL"
 
 	defaultWorkerListenAddr = ":8081"
-	defaultWorkerID         = "worker-local"
+	defaultBrokerID         = "broker_local"
+	defaultWorkerID         = "worker_local"
 	defaultWorkerHost       = "localhost"
 	defaultWorkerTTL        = 30 * time.Minute
 )
@@ -40,8 +43,9 @@ func run(args []string) error {
 
 	configPath := fs.String("file", cmdutil.EnvOrDefault(envWorkerConfigPath, ""), "worker YAML config file")
 	listenAddr := fs.String("listen", cmdutil.EnvOrDefault(envWorkerListenAddr, defaultWorkerListenAddr), "worker listen address")
-	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envWorkerID, defaultWorkerID), "worker ID")
-	workerHost := fs.String("hostname", cmdutil.EnvOrDefault(envWorkerHost, defaultWorkerHost), "worker hostname used for sandbox IDs")
+	brokerID := fs.String("broker-id", cmdutil.EnvOrDefault(envWorkerBrokerID, defaultBrokerID), "broker ID used for sandbox IDs")
+	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envWorkerID, defaultWorkerID), "worker ID used for sandbox IDs")
+	workerHost := fs.String("hostname", cmdutil.EnvOrDefault(envWorkerHost, defaultWorkerHost), "worker hostname")
 	totalCores := fs.Int("total-cores", cmdutil.IntEnvOrDefault(envWorkerTotalCores, 0), "worker CPU capacity (0 = runtime default)")
 	totalMemoryMiB := fs.Int("total-memory-mib", cmdutil.IntEnvOrDefault(envWorkerTotalMemoryMiB, 0), "worker memory capacity in MiB (0 = derived default)")
 	maxLiveSandboxes := fs.Int("max-live-sandboxes", cmdutil.IntEnvOrDefault(envWorkerMaxLive, 0), "maximum concurrent sandboxes (0 = platform default)")
@@ -59,6 +63,7 @@ func run(args []string) error {
 	}
 
 	cfg, err := cmdutil.LoadWorkerConfig(*configPath, cmdutil.WorkerFileConfig{
+		BrokerID:         *brokerID,
 		WorkerID:         *workerID,
 		Hostname:         *workerHost,
 		TotalCores:       *totalCores,
@@ -68,6 +73,12 @@ func run(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if err := sandboxid.ValidateComponentID(cfg.BrokerID); err != nil {
+		return fmt.Errorf("invalid broker-id: %w", err)
+	}
+	if err := sandboxid.ValidateComponentID(cfg.WorkerID); err != nil {
+		return fmt.Errorf("invalid worker-id: %w", err)
 	}
 
 	logger, err := cmdutil.NewLoggerWithConfig("worker", cfg.Log)
@@ -91,6 +102,7 @@ func run(args []string) error {
 
 	svc := worker.NewService(worker.Config{
 		WorkerID:         cfg.WorkerID,
+		BrokerID:         cfg.BrokerID,
 		Hostname:         cfg.Hostname,
 		Validator:        validator,
 		Logger:           logger,
@@ -104,6 +116,7 @@ func run(args []string) error {
 	logger.Info(
 		"worker configured",
 		"auth_mode", validator.Mode(),
+		"broker_id", cfg.BrokerID,
 		"worker_id", cfg.WorkerID,
 		"hostname", cfg.Hostname,
 		"hardware_sku", cfg.HardwareSKU,

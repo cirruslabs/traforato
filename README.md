@@ -41,7 +41,7 @@ sequenceDiagram
   W-->>C: 201 sandbox metadata
 
   C->>BR: /sandboxes/{sandbox_id}/...
-  Note over BR: Parse sandbox_id and worker hash<br/>No JWT validation on sandbox-scoped routing
+  Note over BR: Parse sandbox_id broker_id + worker_id<br/>No JWT validation on sandbox-scoped routing
   BR-->>C: 307 to owning worker
   C->>W: Follow redirect and execute operation
 ```
@@ -69,7 +69,8 @@ sequenceDiagram
 `POST /sandboxes` accepts optional `hardware_sku` to target placement to workers with that SKU.
 
 `sandbox_id` format:
-`sbx_<md5(lowercase(worker_hostname))>_<ulid>`
+`sbx-<broker_id>-<worker_id>-<uuidv4>`
+(`broker_id` and `worker_id` are hyphen-free component IDs)
 
 ## Auth Modes
 | Mode | Condition | Behavior |
@@ -119,7 +120,8 @@ go run ./cmd/worker --file ./worker.yaml
 Example `worker.yaml`:
 
 ```yaml
-worker-id: worker-local
+broker-id: broker_local
+worker-id: worker_local
 hostname: localhost
 hardware-sku: cpu-standard
 virtualization: vetu
@@ -150,6 +152,7 @@ go run ./cmd/broker
 ```
 
 Optional static worker registration fields on broker include `--worker-hardware-sku` (or `TRAFORATO_BROKER_WORKER_HARDWARE_SKU`).
+Broker identity can be configured with `--broker-id` (or `TRAFORATO_BROKER_ID`).
 
 Start both broker and worker for local development:
 
@@ -158,6 +161,7 @@ go run ./cmd/dev
 ```
 
 `cmd/dev` also accepts the same worker config file via `--file` (or `TRAFORATO_DEV_WORKER_CONFIG`) and applies it to worker runtime settings, logging, hardware SKU registration, and pre-pull images.
+Worker and dev commands support broker identity via `--broker-id` (`TRAFORATO_WORKER_BROKER_ID` / `TRAFORATO_DEV_BROKER_ID`).
 
 By default, all commands run in `dev` no-auth mode (empty `TRAFORATO_JWT_SECRET`).
 Set `TRAFORATO_JWT_SECRET` (and optionally `TRAFORATO_JWT_ISSUER`, `TRAFORATO_JWT_AUDIENCE`) to enable `prod` JWT validation mode.

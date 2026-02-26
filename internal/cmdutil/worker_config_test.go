@@ -12,6 +12,7 @@ func TestLoadWorkerConfigMergeAndOverride(t *testing.T) {
 	t.Parallel()
 
 	defaults := WorkerFileConfig{
+		BrokerID:         "broker_local",
 		WorkerID:         "worker-a",
 		Hostname:         "worker-a.local",
 		TotalCores:       4,
@@ -22,6 +23,7 @@ func TestLoadWorkerConfigMergeAndOverride(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "worker.yaml")
 	configBody := `
+broker-id: broker_beta
 virtualization: vetu
 hostname: worker-b.local
 hardware-sku: gpu-a100
@@ -46,6 +48,9 @@ pre-pull:
 
 	if cfg.WorkerID != defaults.WorkerID {
 		t.Fatalf("WorkerID mismatch: got %q want %q", cfg.WorkerID, defaults.WorkerID)
+	}
+	if cfg.BrokerID != "broker_beta" {
+		t.Fatalf("BrokerID mismatch: got %q", cfg.BrokerID)
 	}
 	if cfg.Hostname != "worker-b.local" {
 		t.Fatalf("Hostname mismatch: got %q", cfg.Hostname)

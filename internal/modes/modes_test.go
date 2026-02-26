@@ -18,11 +18,12 @@ func TestMissingJWTSecretSwitchesBrokerAndWorkerToDevNoAuthMode(t *testing.T) {
 	devValidator := auth.NewValidator("", "traforato", "traforato-api", func() time.Time { return now })
 
 	brokerSvc := broker.NewService(broker.Config{
+		BrokerID:  "broker_local",
 		Validator: devValidator,
 		Clock:     func() time.Time { return now },
 	})
 	brokerSvc.RegisterWorker(broker.Worker{
-		WorkerID:  "worker-a",
+		WorkerID:  "worker_a",
 		Hostname:  "worker-a.local",
 		BaseURL:   "http://worker-a.local:8081",
 		Available: true,
@@ -37,6 +38,8 @@ func TestMissingJWTSecretSwitchesBrokerAndWorkerToDevNoAuthMode(t *testing.T) {
 	}
 
 	workerSvc := worker.NewService(worker.Config{
+		BrokerID:       "broker_local",
+		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
 		Validator:      devValidator,
 		Clock:          func() time.Time { return now },

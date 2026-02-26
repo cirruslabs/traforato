@@ -23,12 +23,12 @@ type Worker struct {
 	WorkerID    string
 	Hostname    string
 	BaseURL     string
-	Hash        string
 	HardwareSKU string
 	Available   bool
 }
 
 type Config struct {
+	BrokerID  string
 	Validator *auth.Validator
 	Logger    *slog.Logger
 	Telemetry *telemetry.Recorder
@@ -38,9 +38,9 @@ type Config struct {
 type Service struct {
 	cfg Config
 
-	mu            sync.RWMutex
-	workersByHash map[string]Worker
-	workers       []Worker
+	mu          sync.RWMutex
+	workersByID map[string]Worker
+	workers     []Worker
 }
 
 func NewService(cfg Config) *Service {
@@ -63,26 +63,27 @@ func NewService(cfg Config) *Service {
 	}
 	_ = cfg.Telemetry.SetGauge(telemetry.MetricServiceAuthMode, authModeMetric, nil)
 	return &Service{
-		cfg:           cfg,
-		workersByHash: make(map[string]Worker),
+		cfg:         cfg,
+		workersByID: make(map[string]Worker),
 	}
 }
 
 func (s *Service) RegisterWorker(worker Worker) {
-	if worker.Hash == "" {
-		worker.Hash = sandboxid.WorkerHash(worker.Hostname)
-	}
+	worker.WorkerID = strings.TrimSpace(worker.WorkerID)
 	worker.HardwareSKU = strings.TrimSpace(worker.HardwareSKU)
 	if !worker.Available {
 		worker.Available = true
 	}
+	if worker.WorkerID == "" {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.workersByHash[worker.Hash] = worker
+	s.workersByID[worker.WorkerID] = worker
 	replaced := false
 	for i := range s.workers {
-		if s.workers[i].Hash == worker.Hash {
+		if s.workers[i].WorkerID == worker.WorkerID {
 			s.workers[i] = worker
 			replaced = true
 			break
@@ -93,17 +94,17 @@ func (s *Service) RegisterWorker(worker Worker) {
 	}
 }
 
-func (s *Service) SetWorkerAvailability(workerHash string, available bool) {
+func (s *Service) SetWorkerAvailability(workerID string, available bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	worker, ok := s.workersByHash[workerHash]
+	worker, ok := s.workersByID[workerID]
 	if !ok {
 		return
 	}
 	worker.Available = available
-	s.workersByHash[workerHash] = worker
+	s.workersByID[workerID] = worker
 	for i := range s.workers {
-		if s.workers[i].Hash == workerHash {
+		if s.workers[i].WorkerID == workerID {
 			s.workers[i] = worker
 		}
 	}
@@ -158,11 +159,15 @@ func (s *Service) handleSandboxScoped(ctx context.Context, w http.ResponseWriter
 		s.writeError(w, http.StatusBadRequest, "malformed sandbox_id")
 		return
 	}
+	if parsed.BrokerID != s.cfg.BrokerID {
+		s.writeError(w, http.StatusNotFound, "broker id mismatch")
+		return
+	}
 
-	worker, err := s.workerByHash(parsed.WorkerHash)
+	worker, err := s.workerByID(parsed.WorkerID)
 	if err != nil {
 		if errors.Is(err, errWorkerUnknown) {
-			s.writeError(w, http.StatusNotFound, "worker hash unknown")
+			s.writeError(w, http.StatusNotFound, "worker id unknown")
 			return
 		}
 		s.writeError(w, http.StatusServiceUnavailable, "worker temporarily unavailable")
@@ -236,10 +241,10 @@ var (
 	errWorkerHardwareSKUUnavailable = errors.New("requested hardware_sku unavailable")
 )
 
-func (s *Service) workerByHash(hash string) (Worker, error) {
+func (s *Service) workerByID(workerID string) (Worker, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	worker, ok := s.workersByHash[hash]
+	worker, ok := s.workersByID[workerID]
 	if !ok {
 		return Worker{}, errWorkerUnknown
 	}

@@ -16,6 +16,7 @@ import (
 )
 
 type WorkerFileConfig struct {
+	BrokerID         string              `yaml:"broker-id"`
 	WorkerID         string              `yaml:"worker-id"`
 	Hostname         string              `yaml:"hostname"`
 	HardwareSKU      string              `yaml:"hardware-sku"`

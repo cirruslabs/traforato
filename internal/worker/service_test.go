@@ -57,6 +57,8 @@ func decodeJSON(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 func TestWorkerDevModeAllowsNoAuth(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	svc := NewService(Config{
+		BrokerID:       "broker_local",
+		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
 		Validator:      auth.NewValidator("", "", "", func() time.Time { return now }),
 		Clock:          func() time.Time { return now },
@@ -72,6 +74,9 @@ func TestWorkerDevModeAllowsNoAuth(t *testing.T) {
 		t.Fatalf("expected 201, got %d body=%s", createRR.Code, createRR.Body.String())
 	}
 	createPayload := decodeJSON(t, createRR)
+	if _, exists := createPayload["worker_hash"]; exists {
+		t.Fatal("expected worker_hash to be omitted from create payload")
+	}
 	sandboxID := createPayload["sandbox_id"].(string)
 
 	getReq := newRequest(t, http.MethodGet, "/sandboxes/"+sandboxID, nil)
@@ -86,6 +91,8 @@ func TestWorkerProdModeEnforcesOwnership(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
+		BrokerID:       "broker_local",
+		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
 		Validator:      validator,
 		Clock:          func() time.Time { return now },
@@ -128,7 +135,8 @@ func TestFirstExecTTIMetricEmittedOncePerSandbox(t *testing.T) {
 
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
 	svc := NewService(Config{
-		WorkerID:       "worker-a",
+		BrokerID:       "broker_local",
+		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
 		Validator:      validator,
 		Telemetry:      telemetryRecorder,

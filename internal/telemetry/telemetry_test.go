@@ -23,7 +23,7 @@ func TestAuthModeGauge(t *testing.T) {
 }
 
 func TestMetricLabelLintRejectsHighCardinalityKeys(t *testing.T) {
-	if err := ValidateLabels(map[string]string{"sandbox_id": "sbx_..."}); !errors.Is(err, ErrHighCardinalityLabel) {
+	if err := ValidateLabels(map[string]string{"sandbox_id": "sbx-..."}); !errors.Is(err, ErrHighCardinalityLabel) {
 		t.Fatalf("expected high-cardinality rejection, got %v", err)
 	}
 	if err := ValidateLabels(map[string]string{"status_code": "200", "worker_id": "worker-a"}); err != nil {

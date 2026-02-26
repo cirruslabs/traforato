@@ -11,6 +11,7 @@ import (
 
 	"github.com/fedor/traforato/internal/broker"
 	"github.com/fedor/traforato/internal/cmdutil"
+	"github.com/fedor/traforato/internal/sandboxid"
 	"github.com/fedor/traforato/internal/warm"
 	"github.com/fedor/traforato/internal/worker"
 )
@@ -18,6 +19,7 @@ import (
 const (
 	envDevWorkerConfigPath     = "TRAFORATO_DEV_WORKER_CONFIG"
 	envDevBrokerListenAddr     = "TRAFORATO_DEV_BROKER_LISTEN_ADDR"
+	envDevBrokerID             = "TRAFORATO_DEV_BROKER_ID"
 	envDevWorkerListenAddr     = "TRAFORATO_DEV_WORKER_LISTEN_ADDR"
 	envDevWorkerBaseURL        = "TRAFORATO_DEV_WORKER_BASE_URL"
 	envDevWorkerID             = "TRAFORATO_DEV_WORKER_ID"
@@ -29,7 +31,8 @@ const (
 
 	defaultDevBrokerListenAddr = ":8080"
 	defaultDevWorkerListenAddr = ":8081"
-	defaultDevWorkerID         = "worker-local"
+	defaultDevBrokerID         = "broker_local"
+	defaultDevWorkerID         = "worker_local"
 	defaultDevWorkerHost       = "localhost"
 	defaultDevWorkerTTL        = 30 * time.Minute
 )
@@ -46,10 +49,11 @@ func run(args []string) error {
 
 	workerConfigPath := fs.String("file", cmdutil.EnvOrDefault(envDevWorkerConfigPath, ""), "worker YAML config file")
 	brokerListenAddr := fs.String("broker-listen", cmdutil.EnvOrDefault(envDevBrokerListenAddr, defaultDevBrokerListenAddr), "broker listen address")
+	brokerID := fs.String("broker-id", cmdutil.EnvOrDefault(envDevBrokerID, defaultDevBrokerID), "broker ID used for sandbox IDs")
 	workerListenAddr := fs.String("worker-listen", cmdutil.EnvOrDefault(envDevWorkerListenAddr, defaultDevWorkerListenAddr), "worker listen address")
 	workerBaseURL := fs.String("worker-base-url", os.Getenv(envDevWorkerBaseURL), "worker base URL advertised by broker (default: derived from worker-listen)")
-	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envDevWorkerID, defaultDevWorkerID), "worker ID")
-	workerHost := fs.String("worker-hostname", cmdutil.EnvOrDefault(envDevWorkerHost, defaultDevWorkerHost), "worker hostname used for sandbox IDs")
+	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envDevWorkerID, defaultDevWorkerID), "worker ID used for sandbox IDs")
+	workerHost := fs.String("worker-hostname", cmdutil.EnvOrDefault(envDevWorkerHost, defaultDevWorkerHost), "worker hostname")
 	totalCores := fs.Int("total-cores", cmdutil.IntEnvOrDefault(envDevWorkerTotalCores, 0), "worker CPU capacity (0 = runtime default)")
 	totalMemoryMiB := fs.Int("total-memory-mib", cmdutil.IntEnvOrDefault(envDevWorkerTotalMemoryMiB, 0), "worker memory capacity in MiB (0 = derived default)")
 	maxLiveSandboxes := fs.Int("max-live-sandboxes", cmdutil.IntEnvOrDefault(envDevWorkerMaxLive, 0), "maximum concurrent sandboxes (0 = platform default)")
@@ -71,6 +75,7 @@ func run(args []string) error {
 	}
 
 	workerCfg, err := cmdutil.LoadWorkerConfig(*workerConfigPath, cmdutil.WorkerFileConfig{
+		BrokerID:         *brokerID,
 		WorkerID:         *workerID,
 		Hostname:         *workerHost,
 		TotalCores:       *totalCores,
@@ -80,6 +85,12 @@ func run(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if err := sandboxid.ValidateComponentID(workerCfg.BrokerID); err != nil {
+		return fmt.Errorf("invalid broker-id: %w", err)
+	}
+	if err := sandboxid.ValidateComponentID(workerCfg.WorkerID); err != nil {
+		return fmt.Errorf("invalid worker-id: %w", err)
 	}
 
 	devLogger := cmdutil.NewLogger("dev")
@@ -93,6 +104,7 @@ func run(args []string) error {
 	workerValidator := authCfg.Validator()
 
 	brokerSvc := broker.NewService(broker.Config{
+		BrokerID:  workerCfg.BrokerID,
 		Validator: brokerValidator,
 		Logger:    brokerLogger,
 	})
@@ -119,6 +131,7 @@ func run(args []string) error {
 
 	workerSvc := worker.NewService(worker.Config{
 		WorkerID:         workerCfg.WorkerID,
+		BrokerID:         workerCfg.BrokerID,
 		Hostname:         workerCfg.Hostname,
 		Validator:        workerValidator,
 		Logger:           workerLogger,
@@ -133,6 +146,7 @@ func run(args []string) error {
 		"dev environment configured",
 		"auth_mode", brokerValidator.Mode(),
 		"broker_addr", *brokerListenAddr,
+		"broker_id", workerCfg.BrokerID,
 		"worker_addr", *workerListenAddr,
 		"worker_id", workerCfg.WorkerID,
 		"worker_hostname", workerCfg.Hostname,

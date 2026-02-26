@@ -25,6 +25,7 @@ import (
 
 type Config struct {
 	WorkerID         string
+	BrokerID         string
 	Hostname         string
 	Validator        *auth.Validator
 	Logger           *slog.Logger
@@ -299,9 +300,8 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		ttl = time.Duration(req.TTLSeconds) * time.Second
 	}
 
-	workerHash := sandboxid.WorkerHash(s.cfg.Hostname)
-	if workerHash == "" {
-		s.writeError(w, http.StatusInternalServerError, "worker hostname is required")
+	if s.cfg.BrokerID == "" || s.cfg.WorkerID == "" {
+		s.writeError(w, http.StatusInternalServerError, "broker_id and worker_id are required")
 		return
 	}
 	mibPerCPU := s.cfg.TotalMemoryMiB / s.cfg.TotalCores
@@ -325,7 +325,7 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		return
 	}
 
-	sandboxID, err := sandboxid.New(s.cfg.Hostname, s.cfg.Entropy)
+	sandboxID, err := sandboxid.New(s.cfg.BrokerID, s.cfg.WorkerID, s.cfg.Entropy)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "failed to allocate sandbox id")
 		return
@@ -395,7 +395,6 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		"cpu":            sbx.CPU,
 		"memory_mib":     sbx.MemoryMiB,
 		"virtualization": sbx.Virtualization,
-		"worker_hash":    workerHash,
 	})
 }
 
