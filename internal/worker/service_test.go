@@ -102,6 +102,26 @@ func newTestService(cfg Config) *Service {
 	return NewService(cfg)
 }
 
+func TestHealthzAllowsUnauthenticatedProbe(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(Config{
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:     func() time.Time { return now },
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	svc.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	payload := decodeJSON(t, rr)
+	if payload["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %#v", payload["status"])
+	}
+}
+
 func TestWorkerDevModeAllowsNoAuth(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(Config{

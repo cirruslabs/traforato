@@ -254,6 +254,11 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		"auth_mode", s.cfg.Validator.Mode(),
 	)
 
+	if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
+		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+		return
+	}
+
 	if route, ok := extractInternalWorkerRoute(r); ok {
 		switch route.Route {
 		case internalWorkerRouteVMEvents:

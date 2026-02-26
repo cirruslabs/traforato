@@ -52,6 +52,25 @@ func makeInternalWorkerJWT(t *testing.T, secret, issuer, workerID, jti string, n
 	return signed
 }
 
+func TestHealthz(t *testing.T) {
+	service := NewService(Config{})
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal response: %v body=%s", err, rr.Body.String())
+	}
+	if payload["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %#v", payload["status"])
+	}
+}
+
 func TestSandboxRoutesRedirectWithoutJWTValidation(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	service := NewService(Config{

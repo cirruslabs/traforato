@@ -243,6 +243,11 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		"auth_mode", s.cfg.Validator.Mode(),
 	)
 
+	if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
+		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+		return
+	}
+
 	principal, err := s.cfg.Validator.Authenticate(ctx, r.Header.Get("Authorization"))
 	if err != nil {
 		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerAuthFailuresTotal, map[string]string{
