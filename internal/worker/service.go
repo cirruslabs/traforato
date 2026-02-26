@@ -435,9 +435,8 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		}
 		claimedHintedVM = true
 		startType = model.StartTypeWarm
-		if s.cfg.WarmPool.ConsumeReady(tuple) {
-			// Keep warm counters aligned with concrete VM claims where possible.
-		}
+		// Keep warm counters aligned with concrete VM claims where possible.
+		_ = s.cfg.WarmPool.ConsumeReady(tuple)
 		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmHitTotal, map[string]string{
 			"worker_id": s.cfg.WorkerID,
 			"cpu":       strconv.Itoa(req.CPU),
