@@ -20,6 +20,7 @@ const (
 	envDevWorkerConfigPath     = "TRAFORATO_DEV_WORKER_CONFIG"
 	envDevBrokerListenAddr     = "TRAFORATO_DEV_BROKER_LISTEN_ADDR"
 	envDevBrokerID             = "TRAFORATO_DEV_BROKER_ID"
+	envDevBrokerControlURL     = "TRAFORATO_DEV_BROKER_CONTROL_URL"
 	envDevWorkerListenAddr     = "TRAFORATO_DEV_WORKER_LISTEN_ADDR"
 	envDevWorkerBaseURL        = "TRAFORATO_DEV_WORKER_BASE_URL"
 	envDevWorkerID             = "TRAFORATO_DEV_WORKER_ID"
@@ -50,6 +51,7 @@ func run(args []string) error {
 	workerConfigPath := fs.String("file", cmdutil.EnvOrDefault(envDevWorkerConfigPath, ""), "worker YAML config file")
 	brokerListenAddr := fs.String("broker-listen", cmdutil.EnvOrDefault(envDevBrokerListenAddr, defaultDevBrokerListenAddr), "broker listen address")
 	brokerID := fs.String("broker-id", cmdutil.EnvOrDefault(envDevBrokerID, defaultDevBrokerID), "broker ID used for sandbox IDs")
+	brokerControlURL := fs.String("broker-control-url", cmdutil.EnvOrDefault(envDevBrokerControlURL, ""), "broker base URL used by worker for placement retries and VM callbacks")
 	workerListenAddr := fs.String("worker-listen", cmdutil.EnvOrDefault(envDevWorkerListenAddr, defaultDevWorkerListenAddr), "worker listen address")
 	workerBaseURL := fs.String("worker-base-url", os.Getenv(envDevWorkerBaseURL), "worker base URL advertised by broker (default: derived from worker-listen)")
 	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envDevWorkerID, defaultDevWorkerID), "worker ID used for sandbox IDs")
@@ -73,9 +75,13 @@ func run(args []string) error {
 	if *workerBaseURL == "" {
 		*workerBaseURL = deriveWorkerBaseURL(*workerListenAddr)
 	}
+	if *brokerControlURL == "" {
+		*brokerControlURL = deriveBrokerBaseURL(*brokerListenAddr)
+	}
 
 	workerCfg, err := cmdutil.LoadWorkerConfig(*workerConfigPath, cmdutil.WorkerFileConfig{
 		BrokerID:         *brokerID,
+		BrokerControlURL: *brokerControlURL,
 		WorkerID:         *workerID,
 		Hostname:         *workerHost,
 		TotalCores:       *totalCores,
@@ -104,9 +110,13 @@ func run(args []string) error {
 	workerValidator := authCfg.Validator()
 
 	brokerSvc := broker.NewService(broker.Config{
-		BrokerID:  workerCfg.BrokerID,
-		Validator: brokerValidator,
-		Logger:    brokerLogger,
+		BrokerID:            workerCfg.BrokerID,
+		Validator:           brokerValidator,
+		Logger:              brokerLogger,
+		PlacementRetryMax:   2,
+		InternalJWTSecret:   authCfg.Secret,
+		InternalJWTIssuer:   authCfg.Issuer,
+		InternalJWTAudience: "traforato-internal",
 	})
 	brokerSvc.RegisterWorker(broker.Worker{
 		WorkerID:    workerCfg.WorkerID,
@@ -130,16 +140,20 @@ func run(args []string) error {
 	}
 
 	workerSvc := worker.NewService(worker.Config{
-		WorkerID:         workerCfg.WorkerID,
-		BrokerID:         workerCfg.BrokerID,
-		Hostname:         workerCfg.Hostname,
-		Validator:        workerValidator,
-		Logger:           workerLogger,
-		TotalCores:       workerCfg.TotalCores,
-		TotalMemoryMiB:   workerCfg.TotalMemoryMiB,
-		MaxLiveSandboxes: workerCfg.MaxLiveSandboxes,
-		DefaultTTL:       workerCfg.DefaultTTL,
-		WarmPool:         warmPool,
+		WorkerID:            workerCfg.WorkerID,
+		BrokerID:            workerCfg.BrokerID,
+		BrokerControlURL:    workerCfg.BrokerControlURL,
+		Hostname:            workerCfg.Hostname,
+		Validator:           workerValidator,
+		Logger:              workerLogger,
+		TotalCores:          workerCfg.TotalCores,
+		TotalMemoryMiB:      workerCfg.TotalMemoryMiB,
+		MaxLiveSandboxes:    workerCfg.MaxLiveSandboxes,
+		DefaultTTL:          workerCfg.DefaultTTL,
+		WarmPool:            warmPool,
+		InternalJWTSecret:   authCfg.Secret,
+		InternalJWTIssuer:   authCfg.Issuer,
+		InternalJWTAudience: "traforato-internal",
 	})
 
 	devLogger.Info(
@@ -151,6 +165,7 @@ func run(args []string) error {
 		"worker_id", workerCfg.WorkerID,
 		"worker_hostname", workerCfg.Hostname,
 		"worker_base_url", *workerBaseURL,
+		"broker_control_url", workerCfg.BrokerControlURL,
 		"hardware_sku", workerCfg.HardwareSKU,
 		"pre_pull_images", len(workerCfg.PrePullTargets()),
 	)
@@ -195,6 +210,20 @@ func deriveWorkerBaseURL(listenAddr string) string {
 	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil || port == "" {
 		return "http://localhost:8081"
+	}
+
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "localhost"
+	}
+
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func deriveBrokerBaseURL(listenAddr string) string {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil || port == "" {
+		return "http://localhost:8080"
 	}
 
 	switch host {

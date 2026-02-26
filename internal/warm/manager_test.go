@@ -115,3 +115,23 @@ func TestSSHDropTriggersRewarm(t *testing.T) {
 		t.Fatalf("expected full warm cycle to run twice, calls=%v", runner.calls)
 	}
 }
+
+func TestReadySnapshotReturnsCopy(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	tuple := Tuple{Virtualization: "vetu", Image: "ubuntu:24.04", CPU: 2}
+	runner := &fakeRunner{}
+	mgr := NewManager(func() time.Time { return now }, runner)
+	mgr.SetTupleConfig(tuple, 1, "echo warm", 30)
+	if err := mgr.EnsureReady(tuple); err != nil {
+		t.Fatalf("EnsureReady() unexpected error: %v", err)
+	}
+
+	snapshot := mgr.ReadySnapshot()
+	if snapshot[tuple] != 1 {
+		t.Fatalf("expected ready snapshot count 1, got %d", snapshot[tuple])
+	}
+	snapshot[tuple] = 100
+	if mgr.ReadyCount(tuple) != 1 {
+		t.Fatalf("expected manager state unchanged by snapshot mutation, got %d", mgr.ReadyCount(tuple))
+	}
+}

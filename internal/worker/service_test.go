@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/model"
+	"github.com/fedor/traforato/internal/sandboxid"
 	"github.com/fedor/traforato/internal/telemetry"
+	"github.com/fedor/traforato/internal/warm"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -179,5 +184,116 @@ func TestFirstExecTTIMetricEmittedOncePerSandbox(t *testing.T) {
 	}
 	if ttiSamples != 1 {
 		t.Fatalf("expected one TTI sample, got %d", ttiSamples)
+	}
+}
+
+func TestCreateSandboxClaimsHintedVMAndEmitsClaimedEvent(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	var claimedEvent model.WorkerVMEvent
+	var authHeader string
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll(): %v", err)
+		}
+		if err := json.Unmarshal(body, &claimedEvent); err != nil {
+			t.Fatalf("Unmarshal callback payload: %v body=%s", err, string(body))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer callback.Close()
+
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
+	svc := NewService(Config{
+		BrokerID:            "broker_local",
+		WorkerID:            "worker_a",
+		BrokerControlURL:    callback.URL,
+		Hostname:            "worker-a.local",
+		Validator:           validator,
+		Clock:               func() time.Time { return now },
+		TotalCores:          4,
+		TotalMemoryMiB:      4096,
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+	tuple := warm.Tuple{Virtualization: "vetu", Image: "ubuntu:24.04", CPU: 1}
+	svc.mu.Lock()
+	svc.vms["550e8400-e29b-41d4-a716-446655440000"] = &vmRecord{
+		state: vmStateReady,
+		tuple: tuple,
+	}
+	svc.mu.Unlock()
+
+	handler := svc.Handler()
+	createReq := newRequest(t, http.MethodPost, "/sandboxes?local_vm_id=550e8400-e29b-41d4-a716-446655440000", map[string]any{
+		"image":          "ubuntu:24.04",
+		"cpu":            1,
+		"virtualization": "vetu",
+	})
+	createReq.Header.Set("Authorization", "Bearer "+makeJWT(t, "secret", "client-a", "jti-claim-hint", now))
+	createRR := httptest.NewRecorder()
+	handler.ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for hinted vm claim, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+	sandboxID := decodeJSON(t, createRR)["sandbox_id"].(string)
+	parsed, err := sandboxid.Parse(sandboxID)
+	if err != nil {
+		t.Fatalf("Parse(sandbox_id): %v", err)
+	}
+	if parsed.LocalVMID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected sandbox_id to use hinted local vm id, got %q", parsed.LocalVMID)
+	}
+	if claimedEvent.Event != model.WorkerVMEventClaimed {
+		t.Fatalf("expected claimed callback event, got %q", claimedEvent.Event)
+	}
+	if claimedEvent.LocalVMID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected claimed callback local vm id, got %q", claimedEvent.LocalVMID)
+	}
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		t.Fatalf("expected bearer auth header on callback, got %q", authHeader)
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	claims := &jwt.RegisteredClaims{}
+	parsedToken, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
+		return []byte("secret"), nil
+	}, jwt.WithAudience("traforato-internal"), jwt.WithIssuer("traforato"), jwt.WithTimeFunc(func() time.Time { return now }))
+	if err != nil || !parsedToken.Valid {
+		t.Fatalf("expected valid callback jwt, err=%v", err)
+	}
+	if claims.Subject != "worker_a" {
+		t.Fatalf("expected sub=worker_a, got %q", claims.Subject)
+	}
+}
+
+func TestCreateSandboxRedirectsBackToBrokerOnHintConflict(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
+	svc := NewService(Config{
+		BrokerID:         "broker_local",
+		WorkerID:         "worker_a",
+		BrokerControlURL: "http://broker.example.com",
+		Hostname:         "worker-a.local",
+		Validator:        validator,
+		Clock:            func() time.Time { return now },
+		TotalCores:       4,
+		TotalMemoryMiB:   4096,
+	})
+	handler := svc.Handler()
+	createReq := newRequest(t, http.MethodPost, "/sandboxes?local_vm_id=550e8400-e29b-41d4-a716-446655440000&placement_retry=1", map[string]any{
+		"image":          "ubuntu:24.04",
+		"cpu":            1,
+		"virtualization": "vetu",
+	})
+	createReq.Header.Set("Authorization", "Bearer "+makeJWT(t, "secret", "client-a", "jti-hot-potato", now))
+	createRR := httptest.NewRecorder()
+	handler.ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 for hinted vm conflict, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+	if got := createRR.Header().Get("Location"); got != "http://broker.example.com/sandboxes?placement_retry=2" {
+		t.Fatalf("unexpected redirect location: %s", got)
 	}
 }

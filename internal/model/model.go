@@ -21,6 +21,21 @@ type CreateSandboxRequest struct {
 	TTLSeconds     int    `json:"ttl_seconds"`
 }
 
+const (
+	WorkerVMEventReady   = "ready"
+	WorkerVMEventClaimed = "claimed"
+	WorkerVMEventRetired = "retired"
+)
+
+type WorkerVMEvent struct {
+	Event          string    `json:"event"`
+	LocalVMID      string    `json:"local_vm_id"`
+	Virtualization string    `json:"virtualization"`
+	Image          string    `json:"image"`
+	CPU            int       `json:"cpu"`
+	Timestamp      time.Time `json:"timestamp"`
+}
+
 type Exec struct {
 	ExecID     string     `json:"exec_id"`
 	SandboxID  string     `json:"sandbox_id"`

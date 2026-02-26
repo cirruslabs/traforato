@@ -132,6 +132,16 @@ func (m *Manager) ReadyCount(tuple Tuple) int {
 	return m.ready[tuple]
 }
 
+func (m *Manager) ReadySnapshot() map[Tuple]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[Tuple]int, len(m.ready))
+	for tuple, count := range m.ready {
+		out[tuple] = count
+	}
+	return out
+}
+
 func (m *Manager) WarmDeficit(tuple Tuple) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

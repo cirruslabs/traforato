@@ -17,6 +17,7 @@ const (
 	envWorkerConfigPath     = "TRAFORATO_WORKER_CONFIG"
 	envWorkerListenAddr     = "TRAFORATO_WORKER_LISTEN_ADDR"
 	envWorkerBrokerID       = "TRAFORATO_WORKER_BROKER_ID"
+	envWorkerBrokerControl  = "TRAFORATO_WORKER_BROKER_CONTROL_URL"
 	envWorkerID             = "TRAFORATO_WORKER_ID"
 	envWorkerHost           = "TRAFORATO_WORKER_HOSTNAME"
 	envWorkerTotalCores     = "TRAFORATO_WORKER_TOTAL_CORES"
@@ -44,6 +45,7 @@ func run(args []string) error {
 	configPath := fs.String("file", cmdutil.EnvOrDefault(envWorkerConfigPath, ""), "worker YAML config file")
 	listenAddr := fs.String("listen", cmdutil.EnvOrDefault(envWorkerListenAddr, defaultWorkerListenAddr), "worker listen address")
 	brokerID := fs.String("broker-id", cmdutil.EnvOrDefault(envWorkerBrokerID, defaultBrokerID), "broker ID used for sandbox IDs")
+	brokerControlURL := fs.String("broker-control-url", cmdutil.EnvOrDefault(envWorkerBrokerControl, ""), "broker base URL used for placement retries and VM callbacks")
 	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envWorkerID, defaultWorkerID), "worker ID used for sandbox IDs")
 	workerHost := fs.String("hostname", cmdutil.EnvOrDefault(envWorkerHost, defaultWorkerHost), "worker hostname")
 	totalCores := fs.Int("total-cores", cmdutil.IntEnvOrDefault(envWorkerTotalCores, 0), "worker CPU capacity (0 = runtime default)")
@@ -64,6 +66,7 @@ func run(args []string) error {
 
 	cfg, err := cmdutil.LoadWorkerConfig(*configPath, cmdutil.WorkerFileConfig{
 		BrokerID:         *brokerID,
+		BrokerControlURL: *brokerControlURL,
 		WorkerID:         *workerID,
 		Hostname:         *workerHost,
 		TotalCores:       *totalCores,
@@ -101,16 +104,20 @@ func run(args []string) error {
 	}
 
 	svc := worker.NewService(worker.Config{
-		WorkerID:         cfg.WorkerID,
-		BrokerID:         cfg.BrokerID,
-		Hostname:         cfg.Hostname,
-		Validator:        validator,
-		Logger:           logger,
-		TotalCores:       cfg.TotalCores,
-		TotalMemoryMiB:   cfg.TotalMemoryMiB,
-		MaxLiveSandboxes: cfg.MaxLiveSandboxes,
-		DefaultTTL:       cfg.DefaultTTL,
-		WarmPool:         warmPool,
+		WorkerID:            cfg.WorkerID,
+		BrokerID:            cfg.BrokerID,
+		BrokerControlURL:    cfg.BrokerControlURL,
+		Hostname:            cfg.Hostname,
+		Validator:           validator,
+		Logger:              logger,
+		TotalCores:          cfg.TotalCores,
+		TotalMemoryMiB:      cfg.TotalMemoryMiB,
+		MaxLiveSandboxes:    cfg.MaxLiveSandboxes,
+		DefaultTTL:          cfg.DefaultTTL,
+		WarmPool:            warmPool,
+		InternalJWTSecret:   authCfg.Secret,
+		InternalJWTIssuer:   authCfg.Issuer,
+		InternalJWTAudience: "traforato-internal",
 	})
 
 	logger.Info(
@@ -119,6 +126,7 @@ func run(args []string) error {
 		"broker_id", cfg.BrokerID,
 		"worker_id", cfg.WorkerID,
 		"hostname", cfg.Hostname,
+		"broker_control_url", cfg.BrokerControlURL,
 		"hardware_sku", cfg.HardwareSKU,
 		"total_cores", cfg.TotalCores,
 		"total_memory_mib", cfg.TotalMemoryMiB,

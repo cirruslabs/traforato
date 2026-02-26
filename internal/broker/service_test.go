@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +23,24 @@ func makeBrokerJWT(t *testing.T, secret, jti string, now time.Time) string {
 		"exp":       now.Add(5 * time.Minute).Unix(),
 		"iat":       now.Add(-1 * time.Minute).Unix(),
 		"jti":       jti,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("SignedString(): %v", err)
+	}
+	return signed
+}
+
+func makeInternalWorkerJWT(t *testing.T, secret, issuer, workerID, jti string, now time.Time) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"iss": issuer,
+		"aud": []string{"traforato-internal"},
+		"sub": workerID,
+		"exp": now.Add(45 * time.Second).Unix(),
+		"iat": now.Unix(),
+		"jti": jti,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString([]byte(secret))
@@ -189,5 +209,190 @@ func TestMalformedAndUnknownSandboxRoutes(t *testing.T) {
 	service.Handler().ServeHTTP(brokerMismatchRR, brokerMismatchReq)
 	if brokerMismatchRR.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for broker mismatch, got %d", brokerMismatchRR.Code)
+	}
+}
+
+func TestCreateEndpointUsesReadyVMPlacementHint(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:    "worker_a",
+		Hostname:    "worker-a.local",
+		BaseURL:     "http://worker-a.local:8081",
+		HardwareSKU: "cpu-standard",
+		Available:   true,
+	})
+	eventBody, _ := json.Marshal(map[string]any{
+		"event":          "ready",
+		"local_vm_id":    "550e8400-e29b-41d4-a716-446655440000",
+		"virtualization": "vetu",
+		"image":          "ubuntu:24.04",
+		"cpu":            2,
+		"timestamp":      now.Format(time.RFC3339Nano),
+	})
+	eventReq := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", bytes.NewReader(eventBody))
+	eventReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-vm-1", now))
+	eventRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(eventRR, eventReq)
+	if eventRR.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 vm event, got %d body=%s", eventRR.Code, eventRR.Body.String())
+	}
+
+	createBody, _ := json.Marshal(map[string]any{
+		"image":          "ubuntu:24.04",
+		"cpu":            2,
+		"virtualization": "vetu",
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-ready-placement", now))
+	createRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 for ready placement, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+	location := createRR.Header().Get("Location")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("Parse(location): %v", err)
+	}
+	if parsed.Host != "worker-a.local:8081" || parsed.Path != "/sandboxes" {
+		t.Fatalf("unexpected redirect target: %s", location)
+	}
+	if got := parsed.Query().Get("local_vm_id"); got != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected local_vm_id in redirect, got %q location=%s", got, location)
+	}
+}
+
+func TestCreateEndpointPlacementRetryBudget(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:          "broker_local",
+		Validator:         auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:             func() time.Time { return now },
+		PlacementRetryMax: 1,
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_a",
+		Hostname:  "worker-a.local",
+		BaseURL:   "http://worker-a.local:8081",
+		Available: true,
+	})
+
+	body, _ := json.Marshal(map[string]any{"image": "ubuntu:24.04", "cpu": 1})
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes?placement_retry=2", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-retry-exhausted", now))
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 after retry budget exhausted, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestInternalVMEventAuthAndSubjectMatch(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_a",
+		Hostname:  "worker-a.local",
+		BaseURL:   "http://worker-a.local:8081",
+		Available: true,
+	})
+
+	body := []byte(`{"event":"ready","local_vm_id":"550e8400-e29b-41d4-a716-446655440000","virtualization":"vetu","image":"ubuntu:24.04","cpu":1}`)
+	missingAuthReq := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", bytes.NewReader(body))
+	missingAuthRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(missingAuthRR, missingAuthReq)
+	if missingAuthRR.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing auth, got %d", missingAuthRR.Code)
+	}
+
+	wrongSubReq := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", bytes.NewReader(body))
+	wrongSubReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_b", "jti-vm-wrong-sub", now))
+	wrongSubRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(wrongSubRR, wrongSubReq)
+	if wrongSubRR.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for sub mismatch, got %d", wrongSubRR.Code)
+	}
+
+	validReq := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", bytes.NewReader(body))
+	validReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-vm-valid", now))
+	validRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(validRR, validReq)
+	if validRR.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for valid internal event auth, got %d body=%s", validRR.Code, validRR.Body.String())
+	}
+}
+
+func TestInternalVMEventAllowsDevModeWithoutAuth(t *testing.T) {
+	service := NewService(Config{
+		BrokerID:  "broker_local",
+		Validator: auth.NewValidator("", "", "", nil),
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_a",
+		Hostname:  "worker-a.local",
+		BaseURL:   "http://worker-a.local:8081",
+		Available: true,
+	})
+
+	body := []byte(`{"event":"ready","local_vm_id":"550e8400-e29b-41d4-a716-446655440000","virtualization":"vetu","image":"ubuntu:24.04","cpu":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 in dev mode without auth, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestInternalVMEventRejectsWrongAudience(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_a",
+		Hostname:  "worker-a.local",
+		BaseURL:   "http://worker-a.local:8081",
+		Available: true,
+	})
+
+	claims := jwt.MapClaims{
+		"iss": "traforato",
+		"aud": []string{"traforato-api"},
+		"sub": "worker_a",
+		"exp": now.Add(45 * time.Second).Unix(),
+		"iat": now.Unix(),
+		"jti": "jti-vm-wrong-aud",
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString([]byte("secret"))
+	if err != nil {
+		t.Fatalf("SignedString(): %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", strings.NewReader(`{"event":"ready","local_vm_id":"550e8400-e29b-41d4-a716-446655440000","virtualization":"vetu","image":"ubuntu:24.04","cpu":1}`))
+	req.Header.Set("Authorization", "Bearer "+signed)
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong audience, got %d", rr.Code)
 	}
 }

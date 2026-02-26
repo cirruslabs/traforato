@@ -18,6 +18,7 @@ const (
 	envBrokerWorkerHost  = "TRAFORATO_BROKER_WORKER_HOSTNAME"
 	envBrokerWorkerBase  = "TRAFORATO_BROKER_WORKER_BASE_URL"
 	envBrokerWorkerSKU   = "TRAFORATO_BROKER_WORKER_HARDWARE_SKU"
+	envBrokerRetryMax    = "TRAFORATO_BROKER_PLACEMENT_RETRY_MAX"
 	defaultBrokerAddress = ":8080"
 	defaultBrokerID      = "broker_local"
 	defaultWorkerID      = "worker_local"
@@ -41,6 +42,7 @@ func run(args []string) error {
 	workerHost := fs.String("worker-hostname", cmdutil.EnvOrDefault(envBrokerWorkerHost, defaultWorkerHost), "registered worker hostname")
 	workerBaseURL := fs.String("worker-base-url", cmdutil.EnvOrDefault(envBrokerWorkerBase, defaultWorkerBaseURL), "registered worker base URL")
 	workerHardwareSKU := fs.String("worker-hardware-sku", os.Getenv(envBrokerWorkerSKU), "registered worker hardware SKU")
+	placementRetryMax := fs.Int("placement-retry-max", cmdutil.IntEnvOrDefault(envBrokerRetryMax, 2), "maximum broker placement retries for worker hot-potato redirects")
 	authCfg := cmdutil.BindAuthFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -63,9 +65,13 @@ func run(args []string) error {
 	validator := authCfg.Validator()
 
 	svc := broker.NewService(broker.Config{
-		BrokerID:  *brokerID,
-		Validator: validator,
-		Logger:    logger,
+		BrokerID:            *brokerID,
+		Validator:           validator,
+		Logger:              logger,
+		PlacementRetryMax:   *placementRetryMax,
+		InternalJWTSecret:   authCfg.Secret,
+		InternalJWTIssuer:   authCfg.Issuer,
+		InternalJWTAudience: "traforato-internal",
 	})
 	svc.RegisterWorker(broker.Worker{
 		WorkerID:    *workerID,
@@ -83,6 +89,7 @@ func run(args []string) error {
 		"worker_hostname", *workerHost,
 		"worker_base_url", *workerBaseURL,
 		"worker_hardware_sku", *workerHardwareSKU,
+		"placement_retry_max", *placementRetryMax,
 	)
 
 	ctx, stop := cmdutil.SignalContext()

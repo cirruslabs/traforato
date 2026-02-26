@@ -67,6 +67,11 @@ sequenceDiagram
 18. `GET /sandboxes/{sandbox_id}/ports/{port}/url?protocol=http|https|ws|wss`
 
 `POST /sandboxes` accepts optional `hardware_sku` to target placement to workers with that SKU.
+Broker redirects may include `local_vm_id` and `placement_retry` query params for tuple-ready VM claims and hot-potato retries.
+
+Internal broker callback endpoint:
+`POST /internal/workers/{worker_id}/vm-events`
+with event payload fields: `event` (`ready|claimed|retired`), `local_vm_id`, `virtualization`, `image`, `cpu`, `timestamp`.
 
 `sandbox_id` format:
 `sbx-<broker_id>-<worker_id>-<uuidv4>`
@@ -80,6 +85,8 @@ sequenceDiagram
 
 Required JWT claims in production: `client_id`, `iss`, `aud`, `exp`, `iat`, `jti`.
 Replay protection: in-memory `jti` cache until token expiry.
+
+Internal worker callbacks reuse the same JWT secret, but use `aud=traforato-internal` and `sub=<worker_id>`.
 
 ## Warm Pool and Capacity
 ```mermaid
@@ -121,6 +128,7 @@ Example `worker.yaml`:
 
 ```yaml
 broker-id: broker_local
+broker-control-url: http://localhost:8080
 worker-id: worker_local
 hostname: localhost
 hardware-sku: cpu-standard
@@ -152,6 +160,7 @@ go run ./cmd/broker
 ```
 
 Optional static worker registration fields on broker include `--worker-hardware-sku` (or `TRAFORATO_BROKER_WORKER_HARDWARE_SKU`).
+Broker placement retry budget can be configured via `--placement-retry-max` (`TRAFORATO_BROKER_PLACEMENT_RETRY_MAX`).
 Broker identity can be configured with `--broker-id` (or `TRAFORATO_BROKER_ID`).
 
 Start both broker and worker for local development:

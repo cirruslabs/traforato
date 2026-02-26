@@ -24,6 +24,7 @@ func TestLoadWorkerConfigMergeAndOverride(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "worker.yaml")
 	configBody := `
 broker-id: broker_beta
+broker-control-url: http://broker.internal:8080
 virtualization: vetu
 hostname: worker-b.local
 hardware-sku: gpu-a100
@@ -51,6 +52,9 @@ pre-pull:
 	}
 	if cfg.BrokerID != "broker_beta" {
 		t.Fatalf("BrokerID mismatch: got %q", cfg.BrokerID)
+	}
+	if cfg.BrokerControlURL != "http://broker.internal:8080" {
+		t.Fatalf("BrokerControlURL mismatch: got %q", cfg.BrokerControlURL)
 	}
 	if cfg.Hostname != "worker-b.local" {
 		t.Fatalf("Hostname mismatch: got %q", cfg.Hostname)

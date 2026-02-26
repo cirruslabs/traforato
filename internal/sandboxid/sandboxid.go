@@ -40,24 +40,11 @@ func ValidateComponentID(id string) error {
 }
 
 func New(brokerID, workerID string, entropy io.Reader) (string, error) {
-	if entropy == nil {
-		return "", fmt.Errorf("entropy source is required")
-	}
-	if err := ValidateComponentID(brokerID); err != nil {
-		return "", fmt.Errorf("invalid broker_id: %w", err)
-	}
-	if err := ValidateComponentID(workerID); err != nil {
-		return "", fmt.Errorf("invalid worker_id: %w", err)
-	}
-
-	value, err := uuid.NewRandomFromReader(entropy)
+	localVMID, err := NewLocalVMID(entropy)
 	if err != nil {
 		return "", err
 	}
-	if value.Version() != uuid.Version(4) {
-		return "", fmt.Errorf("generated UUID is not v4")
-	}
-	return fmt.Sprintf("%s%s-%s-%s", prefix, brokerID, workerID, value.String()), nil
+	return NewFromLocalVMID(brokerID, workerID, localVMID)
 }
 
 func Parse(id string) (Parsed, error) {
@@ -81,14 +68,7 @@ func Parse(id string) (Parsed, error) {
 	if err := ValidateComponentID(workerID); err != nil {
 		return Parsed{}, ErrMalformed
 	}
-	parsedUUID, err := uuid.Parse(localVMID)
-	if err != nil {
-		return Parsed{}, ErrMalformed
-	}
-	if parsedUUID.Version() != uuid.Version(4) {
-		return Parsed{}, ErrMalformed
-	}
-	if localVMID != parsedUUID.String() {
+	if err := ValidateLocalVMID(localVMID); err != nil {
 		return Parsed{}, ErrMalformed
 	}
 	return Parsed{
@@ -97,4 +77,46 @@ func Parse(id string) (Parsed, error) {
 		WorkerID:  workerID,
 		LocalVMID: localVMID,
 	}, nil
+}
+
+func NewFromLocalVMID(brokerID, workerID, localVMID string) (string, error) {
+	if err := ValidateComponentID(brokerID); err != nil {
+		return "", fmt.Errorf("invalid broker_id: %w", err)
+	}
+	if err := ValidateComponentID(workerID); err != nil {
+		return "", fmt.Errorf("invalid worker_id: %w", err)
+	}
+	if err := ValidateLocalVMID(localVMID); err != nil {
+		return "", fmt.Errorf("invalid local_vm_id: %w", err)
+	}
+	return fmt.Sprintf("%s%s-%s-%s", prefix, brokerID, workerID, localVMID), nil
+}
+
+func NewLocalVMID(entropy io.Reader) (string, error) {
+	if entropy == nil {
+		return "", fmt.Errorf("entropy source is required")
+	}
+	value, err := uuid.NewRandomFromReader(entropy)
+	if err != nil {
+		return "", err
+	}
+	if value.Version() != uuid.Version(4) {
+		return "", fmt.Errorf("generated UUID is not v4")
+	}
+	return value.String(), nil
+}
+
+func ValidateLocalVMID(localVMID string) error {
+	trimmed := strings.TrimSpace(localVMID)
+	parsedUUID, err := uuid.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("malformed local_vm_id")
+	}
+	if parsedUUID.Version() != uuid.Version(4) {
+		return fmt.Errorf("local_vm_id must be uuidv4")
+	}
+	if trimmed != parsedUUID.String() {
+		return fmt.Errorf("local_vm_id must be canonical")
+	}
+	return nil
 }

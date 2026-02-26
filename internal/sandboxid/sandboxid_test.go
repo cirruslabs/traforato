@@ -78,3 +78,13 @@ func TestValidateComponentIDRejectsHyphen(t *testing.T) {
 		t.Fatal("expected validation error for hyphenated id")
 	}
 }
+
+func TestNewFromLocalVMID(t *testing.T) {
+	id, err := NewFromLocalVMID("broker_local", "worker_local", "550e8400-e29b-41d4-a716-446655440000")
+	if err != nil {
+		t.Fatalf("NewFromLocalVMID() unexpected error: %v", err)
+	}
+	if id != "sbx-broker_local-worker_local-550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("unexpected id: %s", id)
+	}
+}

@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,12 +22,14 @@ import (
 	"github.com/fedor/traforato/internal/sandboxid"
 	"github.com/fedor/traforato/internal/telemetry"
 	"github.com/fedor/traforato/internal/warm"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/oklog/ulid/v2"
 )
 
 type Config struct {
 	WorkerID         string
 	BrokerID         string
+	BrokerControlURL string
 	Hostname         string
 	Validator        *auth.Validator
 	Logger           *slog.Logger
@@ -37,6 +41,11 @@ type Config struct {
 	DefaultTTL       time.Duration
 	Clock            func() time.Time
 	Entropy          io.Reader
+	HTTPClient       *http.Client
+
+	InternalJWTSecret   string
+	InternalJWTIssuer   string
+	InternalJWTAudience string
 }
 
 type Service struct {
@@ -47,6 +56,7 @@ type Service struct {
 	execs        map[string]*model.Exec
 	allocatedCPU int
 	allocatedMiB int
+	vms          map[string]*vmRecord
 }
 
 type sandboxState struct {
@@ -57,6 +67,20 @@ type sandboxState struct {
 	dirModTimes       map[string]time.Time
 	tuple             warm.Tuple
 	firstExecRecorded bool
+}
+
+type vmState string
+
+const (
+	vmStateReady   vmState = "READY"
+	vmStateClaimed vmState = "CLAIMED"
+	vmStateRetired vmState = "RETIRED"
+)
+
+type vmRecord struct {
+	mu    sync.Mutex
+	state vmState
+	tuple warm.Tuple
 }
 
 func NewService(cfg Config) *Service {
@@ -94,6 +118,16 @@ func NewService(cfg Config) *Service {
 	if cfg.WarmPool == nil {
 		cfg.WarmPool = warm.NewManager(cfg.Clock, nil)
 	}
+	cfg.BrokerControlURL = strings.TrimSpace(cfg.BrokerControlURL)
+	cfg.InternalJWTSecret = strings.TrimSpace(cfg.InternalJWTSecret)
+	cfg.InternalJWTIssuer = strings.TrimSpace(cfg.InternalJWTIssuer)
+	cfg.InternalJWTAudience = strings.TrimSpace(cfg.InternalJWTAudience)
+	if cfg.InternalJWTAudience == "" {
+		cfg.InternalJWTAudience = "traforato-internal"
+	}
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = &http.Client{Timeout: 3 * time.Second}
+	}
 
 	authModeMetric := 1.0
 	if cfg.Validator.Mode() == auth.ModeDev {
@@ -109,11 +143,14 @@ func NewService(cfg Config) *Service {
 	})
 	cfg.WarmPool.OnWorkerRegister(cfg.MaxLiveSandboxes)
 
-	return &Service{
+	svc := &Service{
 		cfg:       cfg,
 		sandboxes: make(map[string]*sandboxState),
 		execs:     make(map[string]*model.Exec),
+		vms:       make(map[string]*vmRecord),
 	}
+	svc.bootstrapReadyVMs()
+	return svc
 }
 
 func (s *Service) Handler() http.Handler {
@@ -121,6 +158,18 @@ func (s *Service) Handler() http.Handler {
 }
 
 func (s *Service) HandleSSHDrop(tuple warm.Tuple) error {
+	tuple = normalizeTuple(tuple)
+	retired := s.retireReadyVMsForTuple(tuple)
+	for _, localVMID := range retired {
+		s.emitVMEvent(model.WorkerVMEvent{
+			Event:          model.WorkerVMEventRetired,
+			LocalVMID:      localVMID,
+			Virtualization: tuple.Virtualization,
+			Image:          tuple.Image,
+			CPU:            tuple.CPU,
+			Timestamp:      s.cfg.Clock().UTC(),
+		})
+	}
 	_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerSSHReconnectsTotal, map[string]string{
 		"worker_id": s.cfg.WorkerID,
 		"cpu":       strconv.Itoa(tuple.CPU),
@@ -133,6 +182,7 @@ func (s *Service) HandleSSHDrop(tuple warm.Tuple) error {
 		})
 		return err
 	}
+	s.ensureReadyVMCount(tuple, s.cfg.WarmPool.ReadyCount(tuple))
 	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerWarmReady, float64(s.cfg.WarmPool.ReadyCount(tuple)), map[string]string{
 		"worker_id": s.cfg.WorkerID,
 		"cpu":       strconv.Itoa(tuple.CPU),
@@ -290,6 +340,18 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 	if req.Virtualization == "" {
 		req.Virtualization = "vetu"
 	}
+	retry, err := parsePlacementRetry(r.URL.Query().Get("placement_retry"))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid placement_retry")
+		return
+	}
+	hintedLocalVMID := strings.TrimSpace(r.URL.Query().Get("local_vm_id"))
+	if hintedLocalVMID != "" {
+		if err := sandboxid.ValidateLocalVMID(hintedLocalVMID); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid local_vm_id")
+			return
+		}
+	}
 	tuple := warm.Tuple{
 		Virtualization: req.Virtualization,
 		Image:          req.Image,
@@ -311,27 +373,64 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 	memoryMiB := req.CPU * mibPerCPU
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.sandboxes) >= s.cfg.MaxLiveSandboxes {
+		s.mu.Unlock()
 		s.writeError(w, http.StatusServiceUnavailable, "no capacity: max sandbox count reached")
 		return
 	}
 	if s.allocatedCPU+req.CPU > s.cfg.TotalCores {
+		s.mu.Unlock()
 		s.writeError(w, http.StatusServiceUnavailable, "no capacity: cpu limit reached")
 		return
 	}
 	if s.allocatedMiB+memoryMiB > s.cfg.TotalMemoryMiB {
+		s.mu.Unlock()
 		s.writeError(w, http.StatusServiceUnavailable, "no capacity: memory limit reached")
 		return
 	}
 
-	sandboxID, err := sandboxid.New(s.cfg.BrokerID, s.cfg.WorkerID, s.cfg.Entropy)
+	now := s.cfg.Clock().UTC()
+	startType := "cold"
+	claimedHintedVM := false
+	if hintedLocalVMID != "" {
+		if !s.claimReadyVMLocked(hintedLocalVMID, tuple) {
+			s.mu.Unlock()
+			if err := s.redirectBackToBroker(w, r, retry+1); err != nil {
+				s.writeError(w, http.StatusServiceUnavailable, "unable to retry placement")
+			}
+			return
+		}
+		claimedHintedVM = true
+		startType = "warm"
+		if s.cfg.WarmPool.ConsumeReady(tuple) {
+			// Keep warm counters aligned with concrete VM claims where possible.
+		}
+		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmHitTotal, map[string]string{
+			"worker_id": s.cfg.WorkerID,
+			"cpu":       strconv.Itoa(req.CPU),
+		})
+	} else {
+		if s.cfg.WarmPool.ConsumeReady(tuple) {
+			startType = "warm"
+			_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmHitTotal, map[string]string{
+				"worker_id": s.cfg.WorkerID,
+				"cpu":       strconv.Itoa(req.CPU),
+			})
+		} else {
+			_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmMissTotal, map[string]string{
+				"worker_id": s.cfg.WorkerID,
+				"cpu":       strconv.Itoa(req.CPU),
+			})
+		}
+	}
+
+	sandboxID, err := s.newSandboxID(hintedLocalVMID)
 	if err != nil {
+		s.mu.Unlock()
 		s.writeError(w, http.StatusInternalServerError, "failed to allocate sandbox id")
 		return
 	}
 
-	now := s.cfg.Clock().UTC()
 	sbx := model.Sandbox{
 		SandboxID:      sandboxID,
 		OwnerClientID:  principal.ClientID,
@@ -341,19 +440,6 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		Virtualization: req.Virtualization,
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(ttl),
-	}
-	startType := "cold"
-	if s.cfg.WarmPool.ConsumeReady(tuple) {
-		startType = "warm"
-		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmHitTotal, map[string]string{
-			"worker_id": s.cfg.WorkerID,
-			"cpu":       strconv.Itoa(req.CPU),
-		})
-	} else {
-		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmMissTotal, map[string]string{
-			"worker_id": s.cfg.WorkerID,
-			"cpu":       strconv.Itoa(req.CPU),
-		})
 	}
 	s.cfg.WarmPool.RecordDemand(tuple)
 
@@ -387,6 +473,18 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		"start_type": startType,
 		"cpu":        strconv.Itoa(req.CPU),
 	})
+	s.mu.Unlock()
+
+	if claimedHintedVM {
+		s.emitVMEvent(model.WorkerVMEvent{
+			Event:          model.WorkerVMEventClaimed,
+			LocalVMID:      hintedLocalVMID,
+			Virtualization: tuple.Virtualization,
+			Image:          tuple.Image,
+			CPU:            tuple.CPU,
+			Timestamp:      now,
+		})
+	}
 	_ = ctx
 
 	s.writeJSON(w, http.StatusCreated, map[string]any{
@@ -592,6 +690,200 @@ func (s *Service) handleGetFrames(w http.ResponseWriter, r *http.Request, princi
 		"has_more":     false,
 		"wait_applied": r.URL.Query().Get("wait") != "",
 	})
+}
+
+func (s *Service) bootstrapReadyVMs() {
+	readyByTuple := s.cfg.WarmPool.ReadySnapshot()
+	for tuple, count := range readyByTuple {
+		s.ensureReadyVMCount(tuple, count)
+	}
+}
+
+func (s *Service) ensureReadyVMCount(tuple warm.Tuple, target int) {
+	tuple = normalizeTuple(tuple)
+	if target <= 0 {
+		return
+	}
+	existing := 0
+	s.mu.Lock()
+	for _, record := range s.vms {
+		record.mu.Lock()
+		ready := record.state == vmStateReady && record.tuple == tuple
+		record.mu.Unlock()
+		if ready {
+			existing++
+		}
+	}
+	s.mu.Unlock()
+	for i := existing; i < target; i++ {
+		localVMID, err := sandboxid.NewLocalVMID(s.cfg.Entropy)
+		if err != nil {
+			s.cfg.Logger.Warn("failed to allocate local vm id for ready pool", "error", err)
+			break
+		}
+		s.mu.Lock()
+		s.vms[localVMID] = &vmRecord{
+			state: vmStateReady,
+			tuple: tuple,
+		}
+		s.mu.Unlock()
+		s.emitVMEvent(model.WorkerVMEvent{
+			Event:          model.WorkerVMEventReady,
+			LocalVMID:      localVMID,
+			Virtualization: tuple.Virtualization,
+			Image:          tuple.Image,
+			CPU:            tuple.CPU,
+			Timestamp:      s.cfg.Clock().UTC(),
+		})
+	}
+}
+
+func (s *Service) retireReadyVMsForTuple(tuple warm.Tuple) []string {
+	tuple = normalizeTuple(tuple)
+	retired := make([]string, 0)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for localVMID, record := range s.vms {
+		record.mu.Lock()
+		ready := record.state == vmStateReady && record.tuple == tuple
+		if ready {
+			record.state = vmStateRetired
+			delete(s.vms, localVMID)
+			retired = append(retired, localVMID)
+		}
+		record.mu.Unlock()
+	}
+	return retired
+}
+
+func (s *Service) claimReadyVMLocked(localVMID string, tuple warm.Tuple) bool {
+	record, ok := s.vms[localVMID]
+	if !ok {
+		return false
+	}
+	tuple = normalizeTuple(tuple)
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	if record.state != vmStateReady || record.tuple != tuple {
+		return false
+	}
+	record.state = vmStateClaimed
+	delete(s.vms, localVMID)
+	return true
+}
+
+func (s *Service) newSandboxID(localVMID string) (string, error) {
+	if localVMID != "" {
+		return sandboxid.NewFromLocalVMID(s.cfg.BrokerID, s.cfg.WorkerID, localVMID)
+	}
+	return sandboxid.New(s.cfg.BrokerID, s.cfg.WorkerID, s.cfg.Entropy)
+}
+
+func (s *Service) redirectBackToBroker(w http.ResponseWriter, r *http.Request, retry int) error {
+	baseURL := strings.TrimSpace(s.cfg.BrokerControlURL)
+	if baseURL == "" {
+		return errors.New("broker control url is required for placement retry")
+	}
+	target, err := url.JoinPath(baseURL, "/sandboxes")
+	if err != nil {
+		return err
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return err
+	}
+	query := parsed.Query()
+	if retry > 0 {
+		query.Set("placement_retry", strconv.Itoa(retry))
+	}
+	parsed.RawQuery = query.Encode()
+	http.Redirect(w, r, parsed.String(), http.StatusTemporaryRedirect)
+	return nil
+}
+
+func (s *Service) emitVMEvent(event model.WorkerVMEvent) {
+	baseURL := strings.TrimSpace(s.cfg.BrokerControlURL)
+	if baseURL == "" {
+		return
+	}
+	target, err := url.JoinPath(baseURL, "/internal/workers", s.cfg.WorkerID, "vm-events")
+	if err != nil {
+		s.cfg.Logger.Warn("failed to build worker vm event callback url", "error", err)
+		return
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = s.cfg.Clock().UTC()
+	}
+	body, err := json.Marshal(event)
+	if err != nil {
+		s.cfg.Logger.Warn("failed to encode worker vm event", "error", err)
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		s.cfg.Logger.Warn("failed to build worker vm event request", "error", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	token, err := s.newInternalJWT()
+	if err != nil {
+		s.cfg.Logger.Warn("failed to sign worker vm event jwt", "error", err)
+		return
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := s.cfg.HTTPClient.Do(req)
+	if err != nil {
+		s.cfg.Logger.Warn("worker vm event callback failed", "event", event.Event, "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		s.cfg.Logger.Warn("worker vm event callback rejected", "event", event.Event, "status_code", resp.StatusCode)
+	}
+}
+
+func (s *Service) newInternalJWT() (string, error) {
+	if s.cfg.InternalJWTSecret == "" {
+		return "", nil
+	}
+	now := s.cfg.Clock().UTC()
+	claims := jwt.RegisteredClaims{
+		Subject:   s.cfg.WorkerID,
+		Issuer:    s.cfg.InternalJWTIssuer,
+		Audience:  jwt.ClaimStrings{s.cfg.InternalJWTAudience},
+		IssuedAt:  jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(45 * time.Second)),
+		ID:        ulid.Make().String(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(s.cfg.InternalJWTSecret))
+}
+
+func parsePlacementRetry(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	retry, err := strconv.Atoi(raw)
+	if err != nil || retry < 0 {
+		return 0, errors.New("invalid placement_retry")
+	}
+	return retry, nil
+}
+
+func normalizeTuple(tuple warm.Tuple) warm.Tuple {
+	tuple.Virtualization = strings.TrimSpace(tuple.Virtualization)
+	tuple.Image = strings.TrimSpace(tuple.Image)
+	if tuple.Virtualization == "" {
+		tuple.Virtualization = "vetu"
+	}
+	if tuple.CPU <= 0 {
+		tuple.CPU = 1
+	}
+	return tuple
 }
 
 func (s *Service) getOwnedSandbox(principal auth.Principal, sandboxID string) (*sandboxState, error) {
