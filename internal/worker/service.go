@@ -34,6 +34,7 @@ type Config struct {
 	BrokerControlURL string
 	Hostname         string
 	AdvertiseURL     string
+	ListenPort       int
 	HardwareSKU      string
 	Validator        *auth.Validator
 	Logger           *slog.Logger
@@ -990,7 +991,11 @@ func workerBaseURL(cfg Config) string {
 	if host == "" {
 		host = cfg.WorkerID
 	}
-	return "http://" + host + ":8081"
+	port := cfg.ListenPort
+	if port <= 0 {
+		port = 8081
+	}
+	return "http://" + host + ":" + strconv.Itoa(port)
 }
 
 func (s *Service) emitVMEvent(ctx context.Context, event model.WorkerVMEvent) {
