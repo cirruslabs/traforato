@@ -28,20 +28,9 @@ func vmHash(workerID, localVMID string) string {
 	return workerID + "|" + localVMID
 }
 
-func normalizeTuple(tuple warm.Tuple) warm.Tuple {
-	tuple.Virtualization = strings.TrimSpace(tuple.Virtualization)
-	tuple.Image = strings.TrimSpace(tuple.Image)
-	if tuple.Virtualization == "" {
-		tuple.Virtualization = "vetu"
-	}
-	if tuple.CPU <= 0 {
-		tuple.CPU = 1
-	}
-	return tuple
-}
 
 func (s *Service) tupleReadySetLocked(tuple warm.Tuple) map[string]struct{} {
-	tuple = normalizeTuple(tuple)
+	tuple = tuple.Normalize()
 	perVirt, ok := s.readyByVirt[tuple.Virtualization]
 	if !ok {
 		return nil
@@ -57,11 +46,11 @@ func (s *Service) applyVMEventLocked(workerID string, event model.WorkerVMEvent)
 	if err := sandboxid.ValidateLocalVMID(event.LocalVMID); err != nil {
 		return errInvalidVMEvent
 	}
-	tuple := normalizeTuple(warm.Tuple{
+	tuple := warm.Tuple{
 		Virtualization: event.Virtualization,
 		Image:          event.Image,
 		CPU:            event.CPU,
-	})
+	}.Normalize()
 	if tuple.Image == "" {
 		return errInvalidVMEvent
 	}
@@ -143,7 +132,7 @@ func (s *Service) removeReadyHashLocked(hash string, meta vmMeta) {
 }
 
 func (s *Service) popReadyVMLocked(tuple warm.Tuple, hardwareSKU string) (Worker, vmMeta, bool) {
-	tuple = normalizeTuple(tuple)
+	tuple = tuple.Normalize()
 	readySet := s.tupleReadySetLocked(tuple)
 	if len(readySet) == 0 {
 		return Worker{}, vmMeta{}, false

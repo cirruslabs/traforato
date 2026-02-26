@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,6 +19,19 @@ type Tuple struct {
 	Virtualization string
 	Image          string
 	CPU            int
+}
+
+// Normalize returns a copy with trimmed whitespace and default values applied.
+func (t Tuple) Normalize() Tuple {
+	t.Virtualization = strings.TrimSpace(t.Virtualization)
+	t.Image = strings.TrimSpace(t.Image)
+	if t.Virtualization == "" {
+		t.Virtualization = "vetu"
+	}
+	if t.CPU <= 0 {
+		t.CPU = 1
+	}
+	return t
 }
 
 type DemandEvent struct {

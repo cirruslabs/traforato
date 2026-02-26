@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/httputil"
 	"github.com/fedor/traforato/internal/model"
 	"github.com/fedor/traforato/internal/sandboxid"
 	"github.com/fedor/traforato/internal/telemetry"
 	"github.com/fedor/traforato/internal/warm"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/oklog/ulid/v2"
 )
 
 type Worker struct {
@@ -240,7 +240,7 @@ func (s *Service) Handler() http.Handler {
 }
 
 func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
-	requestID := requestIDFromRequest(r)
+	requestID := httputil.RequestID(r)
 	w.Header().Set("X-Request-Id", requestID)
 	ctx := s.cfg.Telemetry.Extract(r.Context(), r.Header)
 	ctx, span := s.cfg.Telemetry.StartSpan(ctx, "broker.request")
@@ -496,7 +496,7 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 	if req.CPU <= 0 {
 		req.CPU = 1
 	}
-	retry, err := parsePlacementRetry(r.URL.Query().Get("placement_retry"))
+	retry, err := httputil.ParsePlacementRetry(r.URL.Query().Get("placement_retry"))
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid placement_retry")
 		return
@@ -653,18 +653,6 @@ func buildCreateRedirectURL(baseURL, localVMID string, retry int) (string, error
 	return target.String(), nil
 }
 
-func parsePlacementRetry(raw string) (int, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, nil
-	}
-	retry, err := strconv.Atoi(raw)
-	if err != nil || retry < 0 {
-		return 0, errors.New("invalid placement_retry")
-	}
-	return retry, nil
-}
-
 func normalizeRegistrationRequest(req model.WorkerRegistrationRequest) (model.WorkerRegistrationRequest, error) {
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	if req.Hostname == "" {
@@ -778,13 +766,6 @@ func (s *Service) writeJSON(w http.ResponseWriter, code int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func requestIDFromRequest(r *http.Request) string {
-	if requestID := strings.TrimSpace(r.Header.Get("X-Request-Id")); requestID != "" {
-		return requestID
-	}
-	return ulid.Make().String()
 }
 
 func (s *Service) injectTraceHeaders(ctx context.Context, header http.Header) {

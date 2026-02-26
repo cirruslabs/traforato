@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/httputil"
 	"github.com/fedor/traforato/internal/model"
 	"github.com/fedor/traforato/internal/sandboxid"
 	"github.com/fedor/traforato/internal/telemetry"
@@ -179,7 +180,7 @@ func (s *Service) Handler() http.Handler {
 }
 
 func (s *Service) HandleSSHDrop(tuple warm.Tuple) error {
-	tuple = normalizeTuple(tuple)
+	tuple = tuple.Normalize()
 	retired := s.retireReadyVMsForTuple(tuple)
 	for _, localVMID := range retired {
 		s.emitVMEvent(context.Background(), model.WorkerVMEvent{
@@ -216,7 +217,7 @@ func (s *Service) HandleSSHDrop(tuple warm.Tuple) error {
 }
 
 func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
-	requestID := requestIDFromRequest(r)
+	requestID := httputil.RequestID(r)
 	w.Header().Set("X-Request-Id", requestID)
 
 	ctx := s.cfg.Telemetry.Extract(r.Context(), r.Header)
@@ -361,7 +362,7 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 	if req.Virtualization == "" {
 		req.Virtualization = "vetu"
 	}
-	retry, err := parsePlacementRetry(r.URL.Query().Get("placement_retry"))
+	retry, err := httputil.ParsePlacementRetry(r.URL.Query().Get("placement_retry"))
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid placement_retry")
 		return
@@ -719,7 +720,7 @@ func (s *Service) bootstrapReadyVMs() {
 }
 
 func (s *Service) ensureReadyVMCount(tuple warm.Tuple, target int) {
-	tuple = normalizeTuple(tuple)
+	tuple = tuple.Normalize()
 	if target <= 0 {
 		return
 	}
@@ -758,7 +759,7 @@ func (s *Service) ensureReadyVMCount(tuple warm.Tuple, target int) {
 }
 
 func (s *Service) retireReadyVMsForTuple(tuple warm.Tuple) []string {
-	tuple = normalizeTuple(tuple)
+	tuple = tuple.Normalize()
 	retired := make([]string, 0)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -780,7 +781,7 @@ func (s *Service) claimReadyVMLocked(localVMID string, tuple warm.Tuple) bool {
 	if !ok {
 		return false
 	}
-	tuple = normalizeTuple(tuple)
+	tuple = tuple.Normalize()
 	record.mu.Lock()
 	defer record.mu.Unlock()
 	if record.state != vmStateReady || record.tuple != tuple {
@@ -1053,29 +1054,7 @@ func (s *Service) newInternalJWT() (string, error) {
 	return token.SignedString([]byte(s.cfg.InternalJWTSecret))
 }
 
-func parsePlacementRetry(raw string) (int, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, nil
-	}
-	retry, err := strconv.Atoi(raw)
-	if err != nil || retry < 0 {
-		return 0, errors.New("invalid placement_retry")
-	}
-	return retry, nil
-}
 
-func normalizeTuple(tuple warm.Tuple) warm.Tuple {
-	tuple.Virtualization = strings.TrimSpace(tuple.Virtualization)
-	tuple.Image = strings.TrimSpace(tuple.Image)
-	if tuple.Virtualization == "" {
-		tuple.Virtualization = "vetu"
-	}
-	if tuple.CPU <= 0 {
-		tuple.CPU = 1
-	}
-	return tuple
-}
 
 var (
 	errSandboxNotFound   = errors.New("sandbox not found")
@@ -1137,10 +1116,5 @@ func (s *Service) writeJSON(w http.ResponseWriter, code int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func requestIDFromRequest(r *http.Request) string {
-	if requestID := strings.TrimSpace(r.Header.Get("X-Request-Id")); requestID != "" {
-		return requestID
-	}
-	return ulid.Make().String()
-}
+
 
