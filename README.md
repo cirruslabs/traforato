@@ -1,137 +1,79 @@
 # traforato
 Prototyping sandboxes optimized for cold start.
 
-## Overview
-Traforato is a Go prototype for routing and lifecycle management of short-lived sandboxes.
-It separates control-plane routing from worker data-plane execution, with warm-pool scheduling and built-in telemetry.
+## What This Project Is
+Traforato is a Go prototype for short-lived sandbox lifecycle management.
 
-Core goals:
-1. Fast sandbox placement and redirect routing by `sandbox_id`.
-2. Production JWT auth with ownership enforcement, plus explicit dev no-auth mode.
-3. Warm pool management keyed by workload tuple `(virtualization, image, cpu)`.
-4. Low-cardinality metrics, traces, and structured logs.
+It is split into:
+1. `broker` (control plane): chooses a worker and redirects requests.
+2. `worker` (data plane): owns sandbox state, execution, files, and warm-pool behavior.
 
-## Architecture
-```mermaid
-flowchart LR
-  Client["Client"] --> Broker["Broker"]
-  Broker -->|307 redirect| WorkerA["Worker A"]
-  Broker -->|307 redirect| WorkerB["Worker B"]
-  Broker -->|307 redirect| WorkerN["Worker N"]
-  WorkerA --> WarmA["Warm Pool Manager"]
-  WorkerA --> StateA["In-Memory Sandbox State"]
-  WorkerB --> WarmB["Warm Pool Manager"]
-  WorkerB --> StateB["In-Memory Sandbox State"]
-  WorkerN --> WarmN["Warm Pool Manager"]
-  WorkerN --> StateN["In-Memory Sandbox State"]
+If you want internals and schematics, go straight to [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+## Quick Start (Local)
+Prerequisites:
+1. Go `1.24+`
+2. `curl`
+3. `jq` (optional, used in examples)
+
+Start broker + worker together:
+
+```bash
+go run ./cmd/dev
 ```
 
-## Request Routing
-```mermaid
-sequenceDiagram
-  participant C as Client
-  participant BR as Broker
-  participant W as Worker
+Default local endpoints:
+1. Broker: `http://localhost:8080`
+2. Worker: `http://localhost:8081`
 
-  C->>BR: POST /sandboxes
-  Note over BR: Prod mode: validate JWT<br/>Dev mode: no JWT checks
-  BR-->>C: 307 Location: worker /sandboxes
-  C->>W: POST /sandboxes
-  Note over W: Enforce auth + ownership in prod
-  W-->>C: 201 sandbox metadata
+## First Request Flow
+Create a sandbox through the broker (it redirects to the worker):
 
-  C->>BR: /sandboxes/{sandbox_id}/...
-  Note over BR: Parse sandbox_id broker_id + worker_id<br/>No JWT validation on sandbox-scoped routing
-  BR-->>C: 307 to owning worker
-  C->>W: Follow redirect and execute operation
+```bash
+SANDBOX_ID=$(
+  curl -sS -L -X POST http://localhost:8080/sandboxes \
+    -H 'content-type: application/json' \
+    -d '{"image":"alpine:3.20","cpu":1}' \
+  | jq -r '.sandbox_id'
+)
+
+echo "$SANDBOX_ID"
 ```
 
-## API Surface (v1.1 additive)
-1. `POST /sandboxes`
-2. `GET /sandboxes/{sandbox_id}`
-3. `PATCH /sandboxes/{sandbox_id}/lease`
-4. `DELETE /sandboxes/{sandbox_id}`
-5. `PUT /sandboxes/{sandbox_id}/files?path=...`
-6. `GET /sandboxes/{sandbox_id}/files?path=...`
-7. `DELETE /sandboxes/{sandbox_id}/files?path=...`
-8. `GET /sandboxes/{sandbox_id}/files/stat?path=...`
-9. `GET /sandboxes/{sandbox_id}/files/list?path=...`
-10. `POST /sandboxes/{sandbox_id}/files/mkdir`
-11. `POST /sandboxes/{sandbox_id}/exec`
-12. `POST /sandboxes/{sandbox_id}/exec/code`
-13. `GET /sandboxes/{sandbox_id}/exec/{exec_id}`
-14. `GET /sandboxes/{sandbox_id}/exec/{exec_id}/frames`
-15. `GET /sandboxes/{sandbox_id}/exec/ws` (optional, currently not enabled)
-16. `ANY /sandboxes/{sandbox_id}/proxy/{port}`
-17. `ANY /sandboxes/{sandbox_id}/proxy/{port}/{path...}`
-18. `GET /sandboxes/{sandbox_id}/ports/{port}/url?protocol=http|https|ws|wss`
+Run code in that sandbox:
 
-`POST /sandboxes` accepts optional `hardware_sku` to target placement to workers with that SKU.
-Broker redirects may include `local_vm_id` and `placement_retry` query params for tuple-ready VM claims and hot-potato retries.
-
-Internal broker callback endpoint:
-`POST /internal/workers/{worker_id}/vm-events`
-with event payload fields: `event` (`ready|claimed|retired`), `local_vm_id`, `virtualization`, `image`, `cpu`, `timestamp`.
-
-Internal worker registration endpoints:
-1. `PUT /internal/workers/{worker_id}/registration` (register/renew lease)
-2. `DELETE /internal/workers/{worker_id}/registration` (best-effort deregister)
-
-`sandbox_id` format:
-`sbx-<broker_id>-<worker_id>-<uuidv4>`
-(`broker_id` and `worker_id` are hyphen-free component IDs)
-
-## Auth Modes
-| Mode | Condition | Behavior |
-|---|---|---|
-| `prod` | JWT secret configured | Broker validates non-sandbox entrypoints; worker validates JWT and enforces ownership. |
-| `dev` | JWT secret missing | Broker and worker skip JWT checks; startup warning and auth-mode metric emitted. |
-
-Required JWT claims in production: `client_id`, `iss`, `aud`, `exp`, `iat`, `jti`.
-Replay protection: in-memory `jti` cache until token expiry.
-
-Internal worker registration and callbacks reuse the same JWT secret, but use `aud=traforato-internal` and `sub=<worker_id>`.
-Broker requires `alg=HS256`, `exp`, `iat`, and `jti` for these internal JWTs.
-In `prod` mode, VM event callbacks are accepted only for workers with an active registration lease.
-
-## Warm Pool and Capacity
-```mermaid
-flowchart TD
-  Demand["Recent demand (60m, exponential decay)"] --> Target["Target warm count per tuple"]
-  Target --> Allocate["Allocate capacity (cpu, memory, live sandbox caps)"]
-  Allocate --> HitMiss{"Warm instance ready?"}
-  HitMiss -->|Yes| Hit["Warm hit"]
-  HitMiss -->|No| Miss["Provision and warmup"]
-  Miss --> Ready["SSH readiness check then mark ready"]
+```bash
+curl -sS -L -X POST "http://localhost:8080/sandboxes/$SANDBOX_ID/exec/code" \
+  -H 'content-type: application/json' \
+  -d '{"runtime":"python","code":"print(\"hello from traforato\")"}'
 ```
 
-Defaults:
-1. `virtualization` defaults to `vetu`.
-2. `max_live_sandboxes` defaults to `2` on macOS, `logical_cores_total` on Linux.
-3. Memory per sandbox is derived from total memory and requested CPU.
+Delete the sandbox:
 
-## Telemetry and Logging
-Metrics include utilization, latency, reliability, and `service.auth.mode`.
-`broker.placement.retry` is expected to stay at `0` in healthy operation; non-zero values indicate placement contention/stale ready hints and should be investigated.
-Tracing uses W3C context propagation across broker and worker boundaries.
-Structured logs (`slog` JSON) include request/trace/span identifiers and avoid secrets.
+```bash
+curl -sS -L -X DELETE "http://localhost:8080/sandboxes/$SANDBOX_ID"
+```
 
-Label policy is strict: only low-cardinality labels are allowed, and keys like `sandbox_id`, `exec_id`, and raw `client_id` are rejected.
+## Running Services Separately
+Start broker:
 
-## Running Services
-Start a worker:
+```bash
+go run ./cmd/broker
+```
+
+Start worker:
 
 ```bash
 go run ./cmd/worker
 ```
 
-Or with a YAML config file:
+Start worker with a YAML config:
 
 ```bash
 go run ./cmd/worker --file ./worker.yaml
 ```
 
-Example `worker.yaml`:
+Minimal `worker.yaml` example:
 
 ```yaml
 broker-id: broker_local
@@ -147,63 +89,48 @@ max-live-sandboxes: 6
 default-ttl: 30m
 registration-heartbeat: 30s
 registration-jitter-percent: 20
-
-log:
-  level: info
-  file: /var/log/traforato/worker.log
-  rotate-size: 100 MB
-  max-rotations: 10
-
-pre-pull:
-  images:
-    - ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04
-    - alpine:3.20
 ```
 
-YAML parsing is strict (unknown keys fail fast). For overlapping values, the YAML file overrides flag and environment defaults.
-Worker registration heartbeat can also be configured with `--registration-heartbeat` / `TRAFORATO_WORKER_REGISTRATION_HEARTBEAT` and jitter with `--registration-jitter-percent` / `TRAFORATO_WORKER_REGISTRATION_JITTER_PERCENT`.
+`cmd/dev` also accepts `--file` (or `TRAFORATO_DEV_WORKER_CONFIG`) and applies worker config values in local development.
 
-Start a broker:
+## Auth Modes
+| Mode | Condition | Behavior |
+|---|---|---|
+| `dev` | `TRAFORATO_JWT_SECRET` is empty | No JWT enforcement (local dev default). |
+| `prod` | `TRAFORATO_JWT_SECRET` is set | JWT validation + ownership checks on worker APIs. |
 
-```bash
-go run ./cmd/broker
-```
+Optional auth env vars:
+1. `TRAFORATO_JWT_SECRET`
+2. `TRAFORATO_JWT_ISSUER`
+3. `TRAFORATO_JWT_AUDIENCE`
 
-Workers self-register over broker internal registration endpoints.
-Broker placement retry budget can be configured via `--placement-retry-max` (`TRAFORATO_BROKER_PLACEMENT_RETRY_MAX`).
-Worker lease settings can be configured via `--worker-lease-ttl` (`TRAFORATO_BROKER_WORKER_LEASE_TTL`) and `--worker-lease-sweep-interval` (`TRAFORATO_BROKER_WORKER_LEASE_SWEEP_INTERVAL`).
-Broker identity can be configured with `--broker-id` (or `TRAFORATO_BROKER_ID`).
+## API At A Glance
+Main public routes:
+1. `POST /sandboxes`
+2. `GET /sandboxes/{sandbox_id}`
+3. `PATCH /sandboxes/{sandbox_id}/lease`
+4. `DELETE /sandboxes/{sandbox_id}`
+5. `PUT|GET|DELETE /sandboxes/{sandbox_id}/files?path=...`
+6. `GET /sandboxes/{sandbox_id}/files/stat?path=...`
+7. `GET /sandboxes/{sandbox_id}/files/list?path=...`
+8. `POST /sandboxes/{sandbox_id}/files/mkdir`
+9. `POST /sandboxes/{sandbox_id}/exec`
+10. `POST /sandboxes/{sandbox_id}/exec/code`
+11. `GET /sandboxes/{sandbox_id}/exec/{exec_id}`
+12. `GET /sandboxes/{sandbox_id}/exec/{exec_id}/frames`
+13. `ANY /sandboxes/{sandbox_id}/proxy/{port}[/{path...}]`
+14. `GET /sandboxes/{sandbox_id}/ports/{port}/url?protocol=http|https|ws|wss`
 
-Start both broker and worker for local development:
-
-```bash
-go run ./cmd/dev
-```
-
-`cmd/dev` also accepts the same worker config file via `--file` (or `TRAFORATO_DEV_WORKER_CONFIG`) and applies it to worker runtime settings, logging, hardware SKU registration, pre-pull images, and registration heartbeat settings.
-Worker and dev commands support broker identity via `--broker-id` (`TRAFORATO_WORKER_BROKER_ID` / `TRAFORATO_DEV_BROKER_ID`).
-
-By default, all commands run in `dev` no-auth mode (empty `TRAFORATO_JWT_SECRET`).
-Set `TRAFORATO_JWT_SECRET` (and optionally `TRAFORATO_JWT_ISSUER`, `TRAFORATO_JWT_AUDIENCE`) to enable `prod` JWT validation mode.
+Full endpoint list, routing behavior, and internal control-plane APIs are documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Releases
-Tagging a commit as `vX.Y.Z` triggers the release workflow:
-1. Goreleaser publishes cross-platform binaries for:
-   - `traforato-broker`
-   - `traforato-worker`
-2. Docker Buildx publishes a multi-arch image to GHCR for:
-   - `ghcr.io/<owner>/<repo>:vX.Y.Z`
-   - `ghcr.io/<owner>/<repo>:latest`
+Tagging `vX.Y.Z` triggers release automation:
+1. Goreleaser builds `traforato-broker` and `traforato-worker`.
+2. Docker Buildx publishes multi-arch images to GHCR (`:vX.Y.Z` and `:latest`).
 
-On pull requests and non-tag pushes to `main`, the same workflow runs in dry-run mode:
-1. Goreleaser snapshot build (`--snapshot --skip=publish`).
-2. Docker multi-arch build without pushing.
-
-Run the released container:
-
-```bash
-docker run --rm -p 8080:8080 ghcr.io/<owner>/<repo>:latest
-```
+Dry-run release validation runs on PRs and non-tag pushes to `main`.
 
 ## Current Scope
-This is a v1 prototype with in-memory state and a single active broker model.
+This is a v1 prototype with:
+1. In-memory state
+2. Single active broker model
