@@ -19,8 +19,13 @@ func (s *Service) handleProxy(w http.ResponseWriter, r *http.Request, principal 
 		s.writeError(w, http.StatusNotFound, "route not found")
 		return
 	}
-	if _, err := s.getOwnedSandbox(principal, sandboxID); err != nil {
+	sbx, err := s.getOwnedSandbox(principal, sandboxID)
+	if err != nil {
 		s.writeOwnedError(w, err)
+		return
+	}
+	if !sbx.NetworkIP.IsValid() {
+		s.writeError(w, http.StatusServiceUnavailable, "sandbox network not ready")
 		return
 	}
 
@@ -38,7 +43,7 @@ func (s *Service) handleProxy(w http.ResponseWriter, r *http.Request, principal 
 		}
 	}
 
-	target := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}
+	target := &url.URL{Scheme: "http", Host: net.JoinHostPort(sbx.NetworkIP.String(), strconv.Itoa(port))}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	baseDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {

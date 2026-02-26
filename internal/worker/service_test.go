@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -60,9 +63,48 @@ func decodeJSON(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 	return payload
 }
 
+type staticIPResolver struct {
+	ip  netip.Addr
+	err error
+}
+
+func (r staticIPResolver) Resolve(_ context.Context, _, _ string) (netip.Addr, error) {
+	if r.err != nil {
+		return netip.Addr{}, r.err
+	}
+	return r.ip, nil
+}
+
+func defaultTestIPResolver() IPResolver {
+	return staticIPResolver{ip: netip.MustParseAddr("127.0.0.1")}
+}
+
+type sequentialIPResolver struct {
+	mu  sync.Mutex
+	ips []netip.Addr
+}
+
+func (r *sequentialIPResolver) Resolve(_ context.Context, _, _ string) (netip.Addr, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.ips) == 0 {
+		return netip.Addr{}, errors.New("no ip configured")
+	}
+	ip := r.ips[0]
+	r.ips = r.ips[1:]
+	return ip, nil
+}
+
+func newTestService(cfg Config) *Service {
+	if cfg.IPResolver == nil {
+		cfg.IPResolver = defaultTestIPResolver()
+	}
+	return NewService(cfg)
+}
+
 func TestWorkerDevModeAllowsNoAuth(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
@@ -96,7 +138,7 @@ func TestWorkerDevModeAllowsNoAuth(t *testing.T) {
 func TestWorkerProdModeEnforcesOwnership(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
@@ -140,7 +182,7 @@ func TestFirstExecTTIMetricEmittedOncePerSandbox(t *testing.T) {
 	t.Cleanup(func() { _ = telemetryRecorder.Shutdown(context.Background()) })
 
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
@@ -206,7 +248,7 @@ func TestCreateSandboxClaimsHintedVMAndEmitsClaimedEvent(t *testing.T) {
 	defer callback.Close()
 
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:            "broker_local",
 		WorkerID:            "worker_a",
 		BrokerControlURL:    callback.URL,
@@ -272,7 +314,7 @@ func TestCreateSandboxClaimsHintedVMAndEmitsClaimedEvent(t *testing.T) {
 func TestCreateSandboxRedirectsBackToBrokerOnHintConflict(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:         "broker_local",
 		WorkerID:         "worker_a",
 		BrokerControlURL: "http://broker.example.com",
@@ -332,7 +374,7 @@ func TestRunRegistrationLoopRegistersWorker(t *testing.T) {
 	}))
 	defer broker.Close()
 
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:                  "broker_local",
 		WorkerID:                  "worker_a",
 		BrokerControlURL:          broker.URL,
@@ -404,7 +446,7 @@ func TestDeregisterWorkerSendsDelete(t *testing.T) {
 	}))
 	defer broker.Close()
 
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:            "broker_local",
 		WorkerID:            "worker_a",
 		BrokerControlURL:    broker.URL,
@@ -429,5 +471,121 @@ func TestDeregisterWorkerSendsDelete(t *testing.T) {
 	}
 	if !strings.HasPrefix(gotAuth, "Bearer ") {
 		t.Fatalf("expected bearer auth on deregistration request, got %q", gotAuth)
+	}
+}
+
+func TestCreateSandboxReturns503WhenIPResolutionFails(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(Config{
+		BrokerID:       "broker_local",
+		WorkerID:       "worker_a",
+		Hostname:       "worker-a.local",
+		Validator:      auth.NewValidator("", "", "", func() time.Time { return now }),
+		Clock:          func() time.Time { return now },
+		TotalCores:     4,
+		TotalMemoryMiB: 4096,
+		IPResolver:     staticIPResolver{err: errors.New("resolve failed")},
+	})
+
+	req := newRequest(t, http.MethodPost, "/sandboxes", map[string]any{
+		"image": "ubuntu:24.04",
+		"cpu":   1,
+	})
+	rr := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when ip resolution fails, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	svc.mu.Lock()
+	sandboxes := len(svc.sandboxes)
+	allocatedCPU := svc.allocatedCPU
+	allocatedMiB := svc.allocatedMiB
+	svc.mu.Unlock()
+	if sandboxes != 0 || allocatedCPU != 0 || allocatedMiB != 0 {
+		t.Fatalf("expected no capacity side effects, got sandboxes=%d cpu=%d mib=%d", sandboxes, allocatedCPU, allocatedMiB)
+	}
+
+	foundMetric := false
+	for _, sample := range svc.cfg.Telemetry.Samples() {
+		if sample.Name == telemetry.MetricWorkerNetworkIPResolveFailuresTotal {
+			foundMetric = true
+			break
+		}
+	}
+	if !foundMetric {
+		t.Fatalf("expected %s metric sample", telemetry.MetricWorkerNetworkIPResolveFailuresTotal)
+	}
+}
+
+func TestProxyUsesPerSandboxResolvedIP(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	resolver := &sequentialIPResolver{
+		ips: []netip.Addr{
+			netip.MustParseAddr("127.0.0.1"),
+			netip.MustParseAddr("127.0.0.2"),
+		},
+	}
+	svc := newTestService(Config{
+		BrokerID:       "broker_local",
+		WorkerID:       "worker_a",
+		Hostname:       "worker-a.local",
+		Validator:      auth.NewValidator("", "", "", func() time.Time { return now }),
+		Clock:          func() time.Time { return now },
+		TotalCores:     4,
+		TotalMemoryMiB: 4096,
+		IPResolver:     resolver,
+	})
+	handler := svc.Handler()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	parsedUpstream, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("Parse(upstream.URL): %v", err)
+	}
+	port := parsedUpstream.Port()
+
+	createSandbox := func() string {
+		req := newRequest(t, http.MethodPost, "/sandboxes", map[string]any{
+			"image": "ubuntu:24.04",
+			"cpu":   1,
+		})
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201 create, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		return decodeJSON(t, rr)["sandbox_id"].(string)
+	}
+
+	firstSandboxID := createSandbox()
+	secondSandboxID := createSandbox()
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/sandboxes/"+firstSandboxID+"/proxy/"+port, nil)
+	firstRR := httptest.NewRecorder()
+	handler.ServeHTTP(firstRR, firstReq)
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 for first sandbox proxy, got %d body=%s", firstRR.Code, firstRR.Body.String())
+	}
+
+	secondCtx, secondCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer secondCancel()
+	secondReq := httptest.NewRequest(http.MethodGet, "/sandboxes/"+secondSandboxID+"/proxy/"+port, nil).WithContext(secondCtx)
+	secondRR := httptest.NewRecorder()
+	handler.ServeHTTP(secondRR, secondReq)
+	if secondRR.Code != http.StatusBadGateway && secondRR.Code != http.StatusGatewayTimeout {
+		t.Fatalf("expected 502/504 for second sandbox proxy, got %d body=%s", secondRR.Code, secondRR.Body.String())
+	}
+
+	svc.mu.Lock()
+	firstIP := svc.sandboxes[firstSandboxID].NetworkIP.String()
+	secondIP := svc.sandboxes[secondSandboxID].NetworkIP.String()
+	svc.mu.Unlock()
+	if firstIP != "127.0.0.1" || secondIP != "127.0.0.2" {
+		t.Fatalf("unexpected sandbox IP mapping: first=%s second=%s", firstIP, secondIP)
 	}
 }

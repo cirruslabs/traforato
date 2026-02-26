@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"runtime"
 	"strconv"
@@ -47,6 +48,8 @@ type Config struct {
 	Clock            func() time.Time
 	Entropy          io.Reader
 	HTTPClient       *http.Client
+	IPResolver       IPResolver
+	IPResolveTimeout time.Duration
 
 	RegistrationHeartbeat     time.Duration
 	RegistrationJitterPercent int
@@ -74,6 +77,7 @@ type sandboxState struct {
 	dirs              map[string]struct{}
 	fileModTimes      map[string]time.Time
 	dirModTimes       map[string]time.Time
+	NetworkIP         netip.Addr
 	tuple             warm.Tuple
 	firstExecRecorded bool
 }
@@ -137,6 +141,12 @@ func NewService(cfg Config) *Service {
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 3 * time.Second}
+	}
+	if cfg.IPResolver == nil {
+		cfg.IPResolver = CommandIPResolver{}
+	}
+	if cfg.IPResolveTimeout <= 0 {
+		cfg.IPResolveTimeout = 2 * time.Second
 	}
 	if cfg.RegistrationHeartbeat <= 0 {
 		cfg.RegistrationHeartbeat = 30 * time.Second
@@ -447,10 +457,31 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		}
 	}
 
-	sandboxID, err := s.newSandboxID(hintedLocalVMID)
+	sandboxID, localVMID, err := s.newSandboxIdentity(hintedLocalVMID)
 	if err != nil {
 		s.mu.Unlock()
 		s.writeError(w, http.StatusInternalServerError, "failed to allocate sandbox id")
+		return
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, s.cfg.IPResolveTimeout)
+	networkIP, err := s.cfg.IPResolver.Resolve(resolveCtx, req.Virtualization, localVMID)
+	cancel()
+	if err != nil {
+		s.mu.Unlock()
+		_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerNetworkIPResolveFailuresTotal, map[string]string{
+			"worker_id":      s.cfg.WorkerID,
+			"virtualization": req.Virtualization,
+			"reason":         ipResolveFailureReason(err),
+		})
+		s.cfg.Logger.Warn(
+			"sandbox ip resolve failed",
+			"worker_id", s.cfg.WorkerID,
+			"sandbox_id", sandboxID,
+			"virtualization", req.Virtualization,
+			"local_vm_id", localVMID,
+			"error", err,
+		)
+		s.writeError(w, http.StatusServiceUnavailable, "sandbox network not ready")
 		return
 	}
 
@@ -478,7 +509,8 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 			"/":          now,
 			"/workspace": now,
 		},
-		tuple: tuple,
+		NetworkIP: networkIP,
+		tuple:     tuple,
 	}
 	s.allocatedCPU += req.CPU
 	s.allocatedMiB += memoryMiB
@@ -508,6 +540,13 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 			Timestamp:      now,
 		})
 	}
+	s.cfg.Logger.Info(
+		"sandbox created",
+		"worker_id", s.cfg.WorkerID,
+		"sandbox_id", sbx.SandboxID,
+		"virtualization", sbx.Virtualization,
+		"network_ip", networkIP.String(),
+	)
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"sandbox_id":     sbx.SandboxID,
 		"expires_at":     sbx.ExpiresAt,
@@ -791,11 +830,19 @@ func (s *Service) claimReadyVMLocked(localVMID string, tuple warm.Tuple) bool {
 	return true
 }
 
-func (s *Service) newSandboxID(localVMID string) (string, error) {
-	if localVMID != "" {
-		return sandboxid.NewFromLocalVMID(s.cfg.BrokerID, s.cfg.WorkerID, localVMID)
+func (s *Service) newSandboxIdentity(localVMID string) (sandboxID string, resolvedLocalVMID string, err error) {
+	resolvedLocalVMID = strings.TrimSpace(localVMID)
+	if resolvedLocalVMID == "" {
+		resolvedLocalVMID, err = sandboxid.NewLocalVMID(s.cfg.Entropy)
+		if err != nil {
+			return "", "", err
+		}
 	}
-	return sandboxid.New(s.cfg.BrokerID, s.cfg.WorkerID, s.cfg.Entropy)
+	sandboxID, err = sandboxid.NewFromLocalVMID(s.cfg.BrokerID, s.cfg.WorkerID, resolvedLocalVMID)
+	if err != nil {
+		return "", "", err
+	}
+	return sandboxID, resolvedLocalVMID, nil
 }
 
 func (s *Service) redirectBackToBroker(w http.ResponseWriter, r *http.Request, retry int) error {
@@ -1057,7 +1104,18 @@ func (s *Service) newInternalJWT() (string, error) {
 	return token.SignedString([]byte(s.cfg.InternalJWTSecret))
 }
 
-
+func ipResolveFailureReason(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, ErrUnsupportedVirtualization):
+		return "unsupported_virtualization"
+	case errors.Is(err, ErrInvalidResolvedIP):
+		return "invalid_output"
+	default:
+		return "command"
+	}
+}
 
 var (
 	errSandboxNotFound   = errors.New("sandbox not found")
@@ -1118,6 +1176,3 @@ func (s *Service) writeJSON(w http.ResponseWriter, code int, payload any) {
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(payload)
 }
-
-
-

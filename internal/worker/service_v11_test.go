@@ -33,7 +33,7 @@ func createSandboxWithAuth(t *testing.T, handler http.Handler, authHeader string
 func TestRunCodeNodeAndPythonSuccess(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
@@ -103,7 +103,7 @@ func TestRunCodeNodeAndPythonSuccess(t *testing.T) {
 func TestRunCodeErrorsAndAsyncMode(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
@@ -197,7 +197,7 @@ func TestRunCodeErrorsAndAsyncMode(t *testing.T) {
 func TestFilesystemRoundtripStatListAndRemove(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
@@ -371,7 +371,7 @@ func TestFilesystemRoundtripStatListAndRemove(t *testing.T) {
 func TestProxyForwardingAndPortURLDiscovery(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
@@ -468,7 +468,7 @@ func TestProxyForwardingAndPortURLDiscovery(t *testing.T) {
 func TestProdOwnershipAppliesToNewEndpoints(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",
@@ -525,7 +525,7 @@ func TestProdOwnershipAppliesToNewEndpoints(t *testing.T) {
 
 func TestDevModeNoAuthStillWorksForNewEndpoints(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	svc := NewService(Config{
+	svc := newTestService(Config{
 		BrokerID:       "broker_local",
 		WorkerID:       "worker_a",
 		Hostname:       "worker-a.local",

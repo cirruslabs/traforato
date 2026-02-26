@@ -2,9 +2,11 @@ package modes_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -12,6 +14,12 @@ import (
 	"github.com/fedor/traforato/internal/broker"
 	"github.com/fedor/traforato/internal/worker"
 )
+
+type staticIPResolver struct{}
+
+func (staticIPResolver) Resolve(_ context.Context, _, _ string) (netip.Addr, error) {
+	return netip.MustParseAddr("127.0.0.1"), nil
+}
 
 func TestMissingJWTSecretSwitchesBrokerAndWorkerToDevNoAuthMode(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
@@ -45,6 +53,7 @@ func TestMissingJWTSecretSwitchesBrokerAndWorkerToDevNoAuthMode(t *testing.T) {
 		Clock:          func() time.Time { return now },
 		TotalCores:     4,
 		TotalMemoryMiB: 4096,
+		IPResolver:     staticIPResolver{},
 	})
 	workerBody, _ := json.Marshal(map[string]any{"image": "ubuntu:24.04", "cpu": 1})
 	workerReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(workerBody))
