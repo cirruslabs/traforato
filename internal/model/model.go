@@ -22,6 +22,26 @@ type CreateSandboxRequest struct {
 }
 
 const (
+	VirtualizationVetu = "vetu"
+	VirtualizationTart = "tart"
+
+	DefaultTartImage = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
+)
+
+// ApplyCreateSandboxDefaults mutates req with platform defaults.
+func ApplyCreateSandboxDefaults(req *CreateSandboxRequest) {
+	if req.Virtualization == "" {
+		req.Virtualization = VirtualizationVetu
+	}
+	if req.CPU <= 0 {
+		req.CPU = 1
+	}
+	if req.Image == "" && req.Virtualization == VirtualizationTart {
+		req.Image = DefaultTartImage
+	}
+}
+
+const (
 	WorkerVMEventReady   = "ready"
 	WorkerVMEventClaimed = "claimed"
 	WorkerVMEventRetired = "retired"

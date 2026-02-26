@@ -155,6 +155,74 @@ func TestWorkerDevModeAllowsNoAuth(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxUsesDefaultTartImageWhenMissing(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(Config{
+		BrokerID:       "broker_local",
+		WorkerID:       "worker_a",
+		Hostname:       "worker-a.local",
+		Validator:      auth.NewValidator("", "", "", func() time.Time { return now }),
+		Clock:          func() time.Time { return now },
+		TotalCores:     4,
+		TotalMemoryMiB: 4096,
+	})
+
+	createReq := newRequest(t, http.MethodPost, "/sandboxes", map[string]any{
+		"virtualization": model.VirtualizationTart,
+		"cpu":            1,
+	})
+	createRR := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+
+	createPayload := decodeJSON(t, createRR)
+	if got := createPayload["virtualization"]; got != model.VirtualizationTart {
+		t.Fatalf("expected virtualization %q, got %v", model.VirtualizationTart, got)
+	}
+	sandboxID := createPayload["sandbox_id"].(string)
+
+	getReq := newRequest(t, http.MethodGet, "/sandboxes/"+sandboxID, nil)
+	getRR := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", getRR.Code, getRR.Body.String())
+	}
+	getPayload := decodeJSON(t, getRR)
+	if got := getPayload["image"]; got != model.DefaultTartImage {
+		t.Fatalf("expected default tart image %q, got %v", model.DefaultTartImage, got)
+	}
+}
+
+func TestCreateSandboxRequiresImageForNonTartVirtualization(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(Config{
+		BrokerID:       "broker_local",
+		WorkerID:       "worker_a",
+		Hostname:       "worker-a.local",
+		Validator:      auth.NewValidator("", "", "", func() time.Time { return now }),
+		Clock:          func() time.Time { return now },
+		TotalCores:     4,
+		TotalMemoryMiB: 4096,
+	})
+
+	createReq := newRequest(t, http.MethodPost, "/sandboxes", map[string]any{
+		"virtualization": model.VirtualizationVetu,
+		"cpu":            1,
+	})
+	createRR := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+
+	payload := decodeJSON(t, createRR)
+	if got := payload["error"]; got != "image is required" {
+		t.Fatalf("expected image required error, got %v", got)
+	}
+}
+
 func TestWorkerProdModeEnforcesOwnership(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	validator := auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now })

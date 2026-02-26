@@ -123,6 +123,10 @@ Main public routes:
 
 Full endpoint list, routing behavior, and internal control-plane APIs are documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
+Create defaults:
+1. `virtualization` defaults to `vetu`.
+2. If `virtualization=tart` and `image` is omitted, `image` defaults to `ghcr.io/cirruslabs/macos-tahoe-base:latest`.
+
 ## Releases
 Tagging `vX.Y.Z` triggers release automation:
 1. Goreleaser builds `traforato-broker` and `traforato-worker`.

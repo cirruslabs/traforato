@@ -496,12 +496,7 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 		s.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Virtualization == "" {
-		req.Virtualization = "vetu"
-	}
-	if req.CPU <= 0 {
-		req.CPU = 1
-	}
+	model.ApplyCreateSandboxDefaults(&req)
 	retry, err := httputil.ParsePlacementRetry(r.URL.Query().Get("placement_retry"))
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid placement_retry")

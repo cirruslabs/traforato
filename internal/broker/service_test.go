@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/model"
 	"github.com/fedor/traforato/internal/telemetry"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -273,6 +274,63 @@ func TestCreateEndpointUsesReadyVMPlacementHint(t *testing.T) {
 	})
 	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(createBody))
 	createReq.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-ready-placement", now))
+	createRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 for ready placement, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+	location := createRR.Header().Get("Location")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("Parse(location): %v", err)
+	}
+	if parsed.Host != "worker-a.local:8081" || parsed.Path != "/sandboxes" {
+		t.Fatalf("unexpected redirect target: %s", location)
+	}
+	if got := parsed.Query().Get("local_vm_id"); got != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected local_vm_id in redirect, got %q location=%s", got, location)
+	}
+}
+
+func TestCreateEndpointUsesDefaultTartImageForReadyPlacement(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:    "worker_a",
+		Hostname:    "worker-a.local",
+		BaseURL:     "http://worker-a.local:8081",
+		HardwareSKU: "cpu-standard",
+		Available:   true,
+	})
+	eventBody, _ := json.Marshal(map[string]any{
+		"event":          "ready",
+		"local_vm_id":    "550e8400-e29b-41d4-a716-446655440000",
+		"virtualization": model.VirtualizationTart,
+		"image":          model.DefaultTartImage,
+		"cpu":            1,
+		"timestamp":      now.Format(time.RFC3339Nano),
+	})
+	eventReq := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", bytes.NewReader(eventBody))
+	eventReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-vm-tart-1", now))
+	eventRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(eventRR, eventReq)
+	if eventRR.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 vm event, got %d body=%s", eventRR.Code, eventRR.Body.String())
+	}
+
+	createBody, _ := json.Marshal(map[string]any{
+		"cpu":            1,
+		"virtualization": model.VirtualizationTart,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-ready-placement-tart", now))
 	createRR := httptest.NewRecorder()
 	service.Handler().ServeHTTP(createRR, createReq)
 	if createRR.Code != http.StatusTemporaryRedirect {

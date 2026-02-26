@@ -368,15 +368,10 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		s.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	model.ApplyCreateSandboxDefaults(&req)
 	if req.Image == "" {
 		s.writeError(w, http.StatusBadRequest, "image is required")
 		return
-	}
-	if req.CPU <= 0 {
-		req.CPU = 1
-	}
-	if req.Virtualization == "" {
-		req.Virtualization = "vetu"
 	}
 	retry, err := httputil.ParsePlacementRetry(r.URL.Query().Get("placement_retry"))
 	if err != nil {

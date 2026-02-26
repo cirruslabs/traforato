@@ -113,8 +113,9 @@ Tuple key:
 
 Defaults:
 1. `virtualization` defaults to `vetu`.
-2. `max_live_sandboxes` defaults to `2` on macOS, `logical_cores_total` on Linux.
-3. Memory per sandbox is derived from total memory and requested CPU.
+2. If `virtualization=tart` and `image` is omitted, `image` defaults to `ghcr.io/cirruslabs/macos-tahoe-base:latest`.
+3. `max_live_sandboxes` defaults to `2` on macOS, `logical_cores_total` on Linux.
+4. Memory per sandbox is derived from total memory and requested CPU.
 
 ## Telemetry And Logging
 Telemetry:
