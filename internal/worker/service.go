@@ -563,7 +563,7 @@ func (s *Service) handleDeleteSandbox(w http.ResponseWriter, principal auth.Prin
 		"worker_id": s.cfg.WorkerID,
 		"cpu":       strconv.Itoa(sbx.CPU),
 	})
-	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerWarmDeficit, float64(maxInt(target-ready, 0)), map[string]string{
+	_ = s.cfg.Telemetry.SetGauge(telemetry.MetricWorkerWarmDeficit, float64(max(target-ready, 0)), map[string]string{
 		"worker_id": s.cfg.WorkerID,
 		"cpu":       strconv.Itoa(sbx.CPU),
 	})
@@ -1136,9 +1136,3 @@ func requestIDFromRequest(r *http.Request) string {
 	return ulid.Make().String()
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
