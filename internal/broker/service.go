@@ -52,7 +52,8 @@ type Config struct {
 }
 
 type Service struct {
-	cfg Config
+	cfg             Config
+	internalReplays *auth.ReplayCache
 
 	mu          sync.RWMutex
 	workersByID map[string]Worker
@@ -113,10 +114,11 @@ func NewService(cfg Config) *Service {
 	}
 	_ = cfg.Telemetry.SetGauge(telemetry.MetricServiceAuthMode, authModeMetric, nil)
 	return &Service{
-		cfg:         cfg,
-		workersByID: make(map[string]Worker),
-		readyByVirt: make(map[string]map[imageCPUKey]map[string]struct{}),
-		vmByHash:    make(map[string]vmMeta),
+		cfg:             cfg,
+		internalReplays: auth.NewReplayCache(cfg.Clock),
+		workersByID:     make(map[string]Worker),
+		readyByVirt:     make(map[string]map[imageCPUKey]map[string]struct{}),
+		vmByHash:        make(map[string]vmMeta),
 	}
 }
 
@@ -739,6 +741,9 @@ func (s *Service) authenticateInternalWorkerJWT(ctx context.Context, r *http.Req
 	}
 	if claims.ID == "" {
 		return jwt.RegisteredClaims{}, errors.New("missing jti")
+	}
+	if claims.ExpiresAt != nil && s.internalReplays.SeenOrAdd(claims.ID, claims.ExpiresAt.Time) {
+		return jwt.RegisteredClaims{}, errors.New("jwt replay detected")
 	}
 	if claims.IssuedAt == nil || claims.IssuedAt.IsZero() {
 		return jwt.RegisteredClaims{}, errors.New("missing iat")
