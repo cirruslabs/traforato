@@ -177,7 +177,7 @@ func (s *Service) HandleSSHDrop(tuple warm.Tuple) error {
 	tuple = normalizeTuple(tuple)
 	retired := s.retireReadyVMsForTuple(tuple)
 	for _, localVMID := range retired {
-		s.emitVMEvent(model.WorkerVMEvent{
+		s.emitVMEvent(context.Background(), model.WorkerVMEvent{
 			Event:          model.WorkerVMEventRetired,
 			LocalVMID:      localVMID,
 			Virtualization: tuple.Virtualization,
@@ -492,7 +492,7 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 	s.mu.Unlock()
 
 	if claimedHintedVM {
-		s.emitVMEvent(model.WorkerVMEvent{
+		s.emitVMEvent(ctx, model.WorkerVMEvent{
 			Event:          model.WorkerVMEventClaimed,
 			LocalVMID:      hintedLocalVMID,
 			Virtualization: tuple.Virtualization,
@@ -741,7 +741,7 @@ func (s *Service) ensureReadyVMCount(tuple warm.Tuple, target int) {
 			tuple: tuple,
 		}
 		s.mu.Unlock()
-		s.emitVMEvent(model.WorkerVMEvent{
+		s.emitVMEvent(context.Background(), model.WorkerVMEvent{
 			Event:          model.WorkerVMEventReady,
 			LocalVMID:      localVMID,
 			Virtualization: tuple.Virtualization,
@@ -972,7 +972,7 @@ func (s *Service) emitReadyVMSnapshot() {
 	}
 	s.mu.Unlock()
 	for _, event := range events {
-		s.emitVMEvent(event)
+		s.emitVMEvent(context.Background(), event)
 	}
 }
 
@@ -987,7 +987,7 @@ func workerBaseURL(cfg Config) string {
 	return "http://" + host + ":8081"
 }
 
-func (s *Service) emitVMEvent(event model.WorkerVMEvent) {
+func (s *Service) emitVMEvent(ctx context.Context, event model.WorkerVMEvent) {
 	baseURL := strings.TrimSpace(s.cfg.BrokerControlURL)
 	if baseURL == "" {
 		return
@@ -1005,7 +1005,7 @@ func (s *Service) emitVMEvent(event model.WorkerVMEvent) {
 		s.cfg.Logger.Warn("failed to encode worker vm event", "error", err)
 		return
 	}
-	req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		s.cfg.Logger.Warn("failed to build worker vm event request", "error", err)
 		return
