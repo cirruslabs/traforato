@@ -66,6 +66,7 @@ const (
 	defaultWorkerLeaseTTL           = 120 * time.Second
 	defaultWorkerLeaseSweepInterval = 10 * time.Second
 	defaultWorkerHeartbeatHint      = 30 * time.Second
+	maxInternalBodyBytes            = 1 << 20 // 1 MiB
 )
 
 func NewService(cfg Config) *Service {
@@ -363,7 +364,7 @@ func (s *Service) handleInternalVMEvent(ctx context.Context, w http.ResponseWrit
 	}
 
 	var event model.WorkerVMEvent
-	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxInternalBodyBytes)).Decode(&event); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -409,7 +410,7 @@ func (s *Service) handleInternalRegister(ctx context.Context, w http.ResponseWri
 	}
 
 	var req model.WorkerRegistrationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxInternalBodyBytes)).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
