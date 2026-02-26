@@ -29,6 +29,7 @@ const (
 	MetricWorkerExecStartDuration   = "worker.exec.start.duration_seconds"
 	MetricWorkerExecDuration        = "worker.exec.duration_seconds"
 	MetricBrokerPlacementDur        = "broker.placement.duration_seconds"
+	MetricBrokerPlacementRetry      = "broker.placement.retry"
 	MetricBrokerNoCapacityTotal     = "broker.no_capacity.total"
 	MetricWorkerWarmupFailuresTotal = "worker.warmup.failures.total"
 	MetricWorkerSSHReconnectsTotal  = "worker.ssh.reconnects.total"

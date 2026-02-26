@@ -290,6 +290,7 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 		s.writeError(w, http.StatusBadRequest, "invalid placement_retry")
 		return
 	}
+	_ = s.cfg.Telemetry.Observe(telemetry.MetricBrokerPlacementRetry, float64(retry), nil)
 	if retry > s.cfg.PlacementRetryMax {
 		_ = s.cfg.Telemetry.Inc(telemetry.MetricBrokerNoCapacityTotal, map[string]string{
 			"status_code": "503",

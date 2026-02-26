@@ -2,6 +2,7 @@ package broker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fedor/traforato/internal/auth"
+	"github.com/fedor/traforato/internal/telemetry"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -394,5 +396,45 @@ func TestInternalVMEventRejectsWrongAudience(t *testing.T) {
 	service.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for wrong audience, got %d", rr.Code)
+	}
+}
+
+func TestCreateEndpointRecordsPlacementRetryMetric(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	rec := telemetry.NewRecorder(auth.ModeProd)
+	t.Cleanup(func() { _ = rec.Shutdown(context.Background()) })
+
+	service := NewService(Config{
+		BrokerID:          "broker_local",
+		Validator:         auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:             func() time.Time { return now },
+		Telemetry:         rec,
+		PlacementRetryMax: 2,
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_a",
+		Hostname:  "worker-a.local",
+		BaseURL:   "http://worker-a.local:8081",
+		Available: true,
+	})
+
+	body, _ := json.Marshal(map[string]any{"image": "ubuntu:24.04", "cpu": 1})
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes?placement_retry=1", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-retry-metric", now))
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 create redirect, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	found := false
+	for _, sample := range rec.Samples() {
+		if sample.Name == telemetry.MetricBrokerPlacementRetry && sample.Value == 1 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s sample with value 1", telemetry.MetricBrokerPlacementRetry)
 	}
 }

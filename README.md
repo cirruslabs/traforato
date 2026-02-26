@@ -106,6 +106,7 @@ Defaults:
 
 ## Telemetry and Logging
 Metrics include utilization, latency, reliability, and `service.auth.mode`.
+`broker.placement.retry` is expected to stay at `0` in healthy operation; non-zero values indicate placement contention/stale ready hints and should be investigated.
 Tracing uses W3C context propagation across broker and worker boundaries.
 Structured logs (`slog` JSON) include request/trace/span identifiers and avoid secrets.
 
