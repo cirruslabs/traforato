@@ -114,6 +114,14 @@ func (s *Service) removeVMLocked(hash string) {
 	s.removeReadyHashLocked(hash, meta)
 }
 
+func (s *Service) removeWorkerReadyVMLocked(workerID string) {
+	for hash, meta := range s.vmByHash {
+		if meta.WorkerID == workerID {
+			s.removeReadyHashLocked(hash, meta)
+		}
+	}
+}
+
 func (s *Service) removeReadyHashLocked(hash string, meta vmMeta) {
 	delete(s.vmByHash, hash)
 	perVirt, ok := s.readyByVirt[meta.Virtualization]
@@ -141,6 +149,7 @@ func (s *Service) popReadyVMLocked(tuple warm.Tuple, hardwareSKU string) (Worker
 		return Worker{}, vmMeta{}, false
 	}
 	hardwareSKU = strings.TrimSpace(hardwareSKU)
+	now := s.cfg.Clock().UTC()
 
 	for hash := range readySet {
 		meta, ok := s.vmByHash[hash]
@@ -160,7 +169,8 @@ func (s *Service) popReadyVMLocked(tuple warm.Tuple, hardwareSKU string) (Worker
 			s.removeReadyHashLocked(hash, meta)
 			continue
 		}
-		if !worker.Available {
+		if !s.workerIsActiveAt(worker, now) {
+			s.removeReadyHashLocked(hash, meta)
 			continue
 		}
 		if hardwareSKU != "" && worker.HardwareSKU != hardwareSKU {

@@ -30,6 +30,8 @@ hostname: worker-b.local
 hardware-sku: gpu-a100
 max-live-sandboxes: 7
 default-ttl: 45m
+registration-heartbeat: 25s
+registration-jitter-percent: 15
 log:
   file: /tmp/traforato-worker.log
   rotate-size: 100 MB
@@ -70,6 +72,12 @@ pre-pull:
 	}
 	if cfg.DefaultTTL != 45*time.Minute {
 		t.Fatalf("DefaultTTL mismatch: got %s", cfg.DefaultTTL)
+	}
+	if cfg.RegistrationHeartbeat != 25*time.Second {
+		t.Fatalf("RegistrationHeartbeat mismatch: got %s", cfg.RegistrationHeartbeat)
+	}
+	if cfg.RegistrationJitterPercent != 15 {
+		t.Fatalf("RegistrationJitterPercent mismatch: got %d", cfg.RegistrationJitterPercent)
 	}
 	if cfg.Log.File != "/tmp/traforato-worker.log" {
 		t.Fatalf("log.file mismatch: got %q", cfg.Log.File)

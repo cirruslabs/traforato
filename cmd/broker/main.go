@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/fedor/traforato/internal/broker"
 	"github.com/fedor/traforato/internal/cmdutil"
@@ -12,18 +13,14 @@ import (
 )
 
 const (
-	envBrokerListenAddr  = "TRAFORATO_BROKER_LISTEN_ADDR"
-	envBrokerID          = "TRAFORATO_BROKER_ID"
-	envBrokerWorkerID    = "TRAFORATO_BROKER_WORKER_ID"
-	envBrokerWorkerHost  = "TRAFORATO_BROKER_WORKER_HOSTNAME"
-	envBrokerWorkerBase  = "TRAFORATO_BROKER_WORKER_BASE_URL"
-	envBrokerWorkerSKU   = "TRAFORATO_BROKER_WORKER_HARDWARE_SKU"
-	envBrokerRetryMax    = "TRAFORATO_BROKER_PLACEMENT_RETRY_MAX"
+	envBrokerListenAddr = "TRAFORATO_BROKER_LISTEN_ADDR"
+	envBrokerID         = "TRAFORATO_BROKER_ID"
+	envBrokerRetryMax   = "TRAFORATO_BROKER_PLACEMENT_RETRY_MAX"
+	envBrokerLeaseTTL   = "TRAFORATO_BROKER_WORKER_LEASE_TTL"
+	envBrokerSweepEvery = "TRAFORATO_BROKER_WORKER_LEASE_SWEEP_INTERVAL"
+
 	defaultBrokerAddress = ":8080"
 	defaultBrokerID      = "broker_local"
-	defaultWorkerID      = "worker_local"
-	defaultWorkerHost    = "localhost"
-	defaultWorkerBaseURL = "http://localhost:8081"
 )
 
 func main() {
@@ -38,11 +35,9 @@ func run(args []string) error {
 
 	listenAddr := fs.String("listen", cmdutil.EnvOrDefault(envBrokerListenAddr, defaultBrokerAddress), "broker listen address")
 	brokerID := fs.String("broker-id", cmdutil.EnvOrDefault(envBrokerID, defaultBrokerID), "broker ID used for sandbox IDs")
-	workerID := fs.String("worker-id", cmdutil.EnvOrDefault(envBrokerWorkerID, defaultWorkerID), "registered worker ID")
-	workerHost := fs.String("worker-hostname", cmdutil.EnvOrDefault(envBrokerWorkerHost, defaultWorkerHost), "registered worker hostname")
-	workerBaseURL := fs.String("worker-base-url", cmdutil.EnvOrDefault(envBrokerWorkerBase, defaultWorkerBaseURL), "registered worker base URL")
-	workerHardwareSKU := fs.String("worker-hardware-sku", os.Getenv(envBrokerWorkerSKU), "registered worker hardware SKU")
 	placementRetryMax := fs.Int("placement-retry-max", cmdutil.IntEnvOrDefault(envBrokerRetryMax, 2), "maximum broker placement retries for worker hot-potato redirects")
+	workerLeaseTTL := fs.Duration("worker-lease-ttl", cmdutil.DurationEnvOrDefault(envBrokerLeaseTTL, 120*time.Second), "worker registration lease TTL")
+	workerLeaseSweep := fs.Duration("worker-lease-sweep-interval", cmdutil.DurationEnvOrDefault(envBrokerSweepEvery, 10*time.Second), "worker lease sweep interval")
 	authCfg := cmdutil.BindAuthFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -57,43 +52,34 @@ func run(args []string) error {
 	if err := sandboxid.ValidateComponentID(*brokerID); err != nil {
 		return fmt.Errorf("invalid broker-id: %w", err)
 	}
-	if err := sandboxid.ValidateComponentID(*workerID); err != nil {
-		return fmt.Errorf("invalid worker-id: %w", err)
-	}
 
 	logger := cmdutil.NewLogger("broker")
 	validator := authCfg.Validator()
 
 	svc := broker.NewService(broker.Config{
-		BrokerID:            *brokerID,
-		Validator:           validator,
-		Logger:              logger,
-		PlacementRetryMax:   *placementRetryMax,
-		InternalJWTSecret:   authCfg.Secret,
-		InternalJWTIssuer:   authCfg.Issuer,
-		InternalJWTAudience: "traforato-internal",
-	})
-	svc.RegisterWorker(broker.Worker{
-		WorkerID:    *workerID,
-		Hostname:    *workerHost,
-		BaseURL:     *workerBaseURL,
-		HardwareSKU: *workerHardwareSKU,
-		Available:   true,
+		BrokerID:                 *brokerID,
+		Validator:                validator,
+		Logger:                   logger,
+		PlacementRetryMax:        *placementRetryMax,
+		InternalJWTSecret:        authCfg.Secret,
+		InternalJWTIssuer:        authCfg.Issuer,
+		InternalJWTAudience:      "traforato-internal",
+		WorkerLeaseTTL:           *workerLeaseTTL,
+		WorkerLeaseSweepInterval: *workerLeaseSweep,
 	})
 
 	logger.Info(
 		"broker configured",
 		"auth_mode", validator.Mode(),
 		"broker_id", *brokerID,
-		"worker_id", *workerID,
-		"worker_hostname", *workerHost,
-		"worker_base_url", *workerBaseURL,
-		"worker_hardware_sku", *workerHardwareSKU,
+		"worker_lease_ttl", workerLeaseTTL.String(),
+		"worker_lease_sweep_interval", workerLeaseSweep.String(),
 		"placement_retry_max", *placementRetryMax,
 	)
 
 	ctx, stop := cmdutil.SignalContext()
 	defer stop()
+	go svc.RunLeaseSweeper(ctx)
 
 	return cmdutil.RunServer(ctx, cmdutil.ServerConfig{
 		Name:    "broker",

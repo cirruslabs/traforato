@@ -23,23 +23,32 @@ import (
 )
 
 type Worker struct {
-	WorkerID    string
-	Hostname    string
-	BaseURL     string
-	HardwareSKU string
-	Available   bool
+	WorkerID         string
+	Hostname         string
+	BaseURL          string
+	HardwareSKU      string
+	TotalCores       int
+	TotalMemoryMiB   int
+	MaxLiveSandboxes int
+	Available        bool
+	Static           bool
+	LastSeenAt       time.Time
+	LeaseExpiresAt   time.Time
 }
 
 type Config struct {
-	BrokerID            string
-	Validator           *auth.Validator
-	Logger              *slog.Logger
-	Telemetry           *telemetry.Recorder
-	Clock               func() time.Time
-	PlacementRetryMax   int
-	InternalJWTSecret   string
-	InternalJWTIssuer   string
-	InternalJWTAudience string
+	BrokerID                 string
+	Validator                *auth.Validator
+	Logger                   *slog.Logger
+	Telemetry                *telemetry.Recorder
+	Clock                    func() time.Time
+	PlacementRetryMax        int
+	InternalJWTSecret        string
+	InternalJWTIssuer        string
+	InternalJWTAudience      string
+	WorkerLeaseTTL           time.Duration
+	WorkerLeaseSweepInterval time.Duration
+	WorkerHeartbeatHint      time.Duration
 }
 
 type Service struct {
@@ -51,6 +60,13 @@ type Service struct {
 	readyByVirt map[string]map[imageCPUKey]map[string]struct{}
 	vmByHash    map[string]vmMeta
 }
+
+const (
+	defaultPlacementRetryMax        = 2
+	defaultWorkerLeaseTTL           = 120 * time.Second
+	defaultWorkerLeaseSweepInterval = 10 * time.Second
+	defaultWorkerHeartbeatHint      = 30 * time.Second
+)
 
 func NewService(cfg Config) *Service {
 	if cfg.Validator == nil {
@@ -69,13 +85,22 @@ func NewService(cfg Config) *Service {
 		cfg.PlacementRetryMax = 0
 	}
 	if cfg.PlacementRetryMax == 0 {
-		cfg.PlacementRetryMax = 2
+		cfg.PlacementRetryMax = defaultPlacementRetryMax
 	}
 	cfg.InternalJWTSecret = strings.TrimSpace(cfg.InternalJWTSecret)
 	cfg.InternalJWTIssuer = strings.TrimSpace(cfg.InternalJWTIssuer)
 	cfg.InternalJWTAudience = strings.TrimSpace(cfg.InternalJWTAudience)
 	if cfg.InternalJWTAudience == "" {
 		cfg.InternalJWTAudience = "traforato-internal"
+	}
+	if cfg.WorkerLeaseTTL <= 0 {
+		cfg.WorkerLeaseTTL = defaultWorkerLeaseTTL
+	}
+	if cfg.WorkerLeaseSweepInterval <= 0 {
+		cfg.WorkerLeaseSweepInterval = defaultWorkerLeaseSweepInterval
+	}
+	if cfg.WorkerHeartbeatHint <= 0 {
+		cfg.WorkerHeartbeatHint = defaultWorkerHeartbeatHint
 	}
 	authModeMetric := 1.0
 	if cfg.Validator.Mode() == auth.ModeDev {
@@ -96,6 +121,8 @@ func NewService(cfg Config) *Service {
 
 func (s *Service) RegisterWorker(worker Worker) {
 	worker.WorkerID = strings.TrimSpace(worker.WorkerID)
+	worker.Hostname = strings.TrimSpace(worker.Hostname)
+	worker.BaseURL = strings.TrimSpace(worker.BaseURL)
 	worker.HardwareSKU = strings.TrimSpace(worker.HardwareSKU)
 	if !worker.Available {
 		worker.Available = true
@@ -103,9 +130,73 @@ func (s *Service) RegisterWorker(worker Worker) {
 	if worker.WorkerID == "" {
 		return
 	}
+	now := s.cfg.Clock().UTC()
+	worker.Static = true
+	worker.LastSeenAt = now
+	worker.LeaseExpiresAt = time.Time{}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.workersByID[worker.WorkerID]; ok && existing.BaseURL != "" && existing.BaseURL != worker.BaseURL {
+		s.removeWorkerReadyVMLocked(worker.WorkerID)
+	}
+	s.upsertWorkerLocked(worker)
+}
 
+func (s *Service) SetWorkerAvailability(workerID string, available bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	workerID = strings.TrimSpace(workerID)
+	worker, ok := s.workersByID[workerID]
+	if !ok {
+		return
+	}
+	worker.Available = available
+	if !available {
+		s.removeWorkerReadyVMLocked(workerID)
+	}
+	s.upsertWorkerLocked(worker)
+}
+
+func (s *Service) RunLeaseSweeper(ctx context.Context) {
+	if s.cfg.WorkerLeaseSweepInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(s.cfg.WorkerLeaseSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			expired := s.sweepExpiredWorkerLeases()
+			if expired > 0 {
+				s.cfg.Logger.Info("expired worker leases", "count", expired)
+			}
+		}
+	}
+}
+
+func (s *Service) sweepExpiredWorkerLeases() int {
+	now := s.cfg.Clock().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	expired := 0
+	for workerID, worker := range s.workersByID {
+		if worker.Static || !worker.Available || worker.LeaseExpiresAt.IsZero() {
+			continue
+		}
+		if !now.After(worker.LeaseExpiresAt) {
+			continue
+		}
+		worker.Available = false
+		s.upsertWorkerLocked(worker)
+		s.removeWorkerReadyVMLocked(workerID)
+		expired++
+	}
+	return expired
+}
+
+func (s *Service) upsertWorkerLocked(worker Worker) {
 	s.workersByID[worker.WorkerID] = worker
 	replaced := false
 	for i := range s.workers {
@@ -120,20 +211,27 @@ func (s *Service) RegisterWorker(worker Worker) {
 	}
 }
 
-func (s *Service) SetWorkerAvailability(workerID string, available bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	worker, ok := s.workersByID[workerID]
-	if !ok {
-		return
-	}
-	worker.Available = available
-	s.workersByID[workerID] = worker
+func (s *Service) deleteWorkerLocked(workerID string) {
+	delete(s.workersByID, workerID)
 	for i := range s.workers {
 		if s.workers[i].WorkerID == workerID {
-			s.workers[i] = worker
+			s.workers = append(s.workers[:i], s.workers[i+1:]...)
+			break
 		}
 	}
+}
+
+func (s *Service) workerIsActiveAt(worker Worker, now time.Time) bool {
+	if !worker.Available {
+		return false
+	}
+	if worker.Static {
+		return true
+	}
+	if worker.LeaseExpiresAt.IsZero() {
+		return false
+	}
+	return !now.After(worker.LeaseExpiresAt)
 }
 
 func (s *Service) Handler() http.Handler {
@@ -154,10 +252,22 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		"auth_mode", s.cfg.Validator.Mode(),
 	)
 
-	if workerID, ok := extractInternalWorkerID(r); ok {
-		if r.Method == http.MethodPost {
-			s.handleInternalVMEvent(ctx, w, r, workerID, logger)
-			return
+	if route, ok := extractInternalWorkerRoute(r); ok {
+		switch route.Route {
+		case internalWorkerRouteVMEvents:
+			if r.Method == http.MethodPost {
+				s.handleInternalVMEvent(ctx, w, r, route.WorkerID, logger)
+				return
+			}
+		case internalWorkerRouteRegistration:
+			if r.Method == http.MethodPut {
+				s.handleInternalRegister(ctx, w, r, route.WorkerID, logger)
+				return
+			}
+			if r.Method == http.MethodDelete {
+				s.handleInternalDeregister(ctx, w, r, route.WorkerID)
+				return
+			}
 		}
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -176,15 +286,32 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	s.writeError(w, http.StatusNotFound, "route not found")
 }
 
-func extractInternalWorkerID(r *http.Request) (string, bool) {
+const (
+	internalWorkerRouteVMEvents     = "vm-events"
+	internalWorkerRouteRegistration = "registration"
+)
+
+type internalWorkerRoute struct {
+	WorkerID string
+	Route    string
+}
+
+func extractInternalWorkerRoute(r *http.Request) (internalWorkerRoute, bool) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) == 4 && parts[0] == "internal" && parts[1] == "workers" && parts[3] == "vm-events" {
+	if len(parts) == 4 && parts[0] == "internal" && parts[1] == "workers" {
 		workerID := strings.TrimSpace(parts[2])
-		if workerID != "" {
-			return workerID, true
+		if workerID == "" {
+			return internalWorkerRoute{}, false
+		}
+		switch parts[3] {
+		case internalWorkerRouteVMEvents, internalWorkerRouteRegistration:
+			return internalWorkerRoute{
+				WorkerID: workerID,
+				Route:    parts[3],
+			}, true
 		}
 	}
-	return "", false
+	return internalWorkerRoute{}, false
 }
 
 func extractSandboxID(r *http.Request) (string, bool) {
@@ -232,7 +359,7 @@ func (s *Service) handleSandboxScoped(ctx context.Context, w http.ResponseWriter
 }
 
 func (s *Service) handleInternalVMEvent(ctx context.Context, w http.ResponseWriter, r *http.Request, workerID string, logger *slog.Logger) {
-	if _, err := s.authenticateInternalVMEvent(ctx, r, workerID); err != nil {
+	if _, err := s.authenticateInternalWorkerJWT(ctx, r, workerID); err != nil {
 		s.writeError(w, http.StatusUnauthorized, "unauthorized internal callback")
 		return
 	}
@@ -248,8 +375,17 @@ func (s *Service) handleInternalVMEvent(ctx context.Context, w http.ResponseWrit
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.workersByID[workerID]; !ok {
+	worker, ok := s.workersByID[workerID]
+	if !ok {
+		if s.cfg.Validator.Mode() == auth.ModeProd {
+			s.writeError(w, http.StatusUnauthorized, "worker must self-register")
+			return
+		}
 		s.writeError(w, http.StatusNotFound, "worker id unknown")
+		return
+	}
+	if s.cfg.Validator.Mode() == auth.ModeProd && !s.workerIsActiveAt(worker, s.cfg.Clock().UTC()) {
+		s.writeError(w, http.StatusUnauthorized, "worker must self-register")
 		return
 	}
 	if err := s.applyVMEventLocked(workerID, event); err != nil {
@@ -261,6 +397,80 @@ func (s *Service) handleInternalVMEvent(ctx context.Context, w http.ResponseWrit
 		"event", event.Event,
 		"local_vm_id", event.LocalVMID,
 	).Info("applied worker vm event")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleInternalRegister(ctx context.Context, w http.ResponseWriter, r *http.Request, workerID string, logger *slog.Logger) {
+	if _, err := s.authenticateInternalWorkerJWT(ctx, r, workerID); err != nil {
+		s.writeError(w, http.StatusUnauthorized, "unauthorized registration")
+		return
+	}
+	if err := sandboxid.ValidateComponentID(workerID); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid worker id")
+		return
+	}
+
+	var req model.WorkerRegistrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	normalized, err := normalizeRegistrationRequest(req)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	now := s.cfg.Clock().UTC()
+	expiresAt := now.Add(s.cfg.WorkerLeaseTTL)
+
+	s.mu.Lock()
+	if existing, ok := s.workersByID[workerID]; ok && existing.BaseURL != "" && existing.BaseURL != normalized.BaseURL {
+		s.removeWorkerReadyVMLocked(workerID)
+	}
+	worker := Worker{
+		WorkerID:         workerID,
+		Hostname:         normalized.Hostname,
+		BaseURL:          normalized.BaseURL,
+		HardwareSKU:      normalized.HardwareSKU,
+		TotalCores:       normalized.TotalCores,
+		TotalMemoryMiB:   normalized.TotalMemoryMiB,
+		MaxLiveSandboxes: normalized.MaxLiveSandboxes,
+		Available:        true,
+		Static:           false,
+		LastSeenAt:       now,
+		LeaseExpiresAt:   expiresAt,
+	}
+	s.upsertWorkerLocked(worker)
+	s.mu.Unlock()
+
+	logger.With(
+		"worker_id", workerID,
+		"hostname", worker.Hostname,
+		"base_url", worker.BaseURL,
+		"hardware_sku", worker.HardwareSKU,
+		"lease_expires_at", expiresAt,
+	).Info("worker registered")
+
+	s.writeJSON(w, http.StatusOK, model.WorkerRegistrationResponse{
+		WorkerID:                 workerID,
+		LeaseTTLSeconds:          int(s.cfg.WorkerLeaseTTL.Seconds()),
+		HeartbeatIntervalSeconds: int(s.cfg.WorkerHeartbeatHint.Seconds()),
+		ExpiresAt:                expiresAt,
+	})
+}
+
+func (s *Service) handleInternalDeregister(ctx context.Context, w http.ResponseWriter, r *http.Request, workerID string) {
+	if _, err := s.authenticateInternalWorkerJWT(ctx, r, workerID); err != nil {
+		s.writeError(w, http.StatusUnauthorized, "unauthorized deregistration")
+		return
+	}
+	s.mu.Lock()
+	worker, ok := s.workersByID[workerID]
+	if ok && !worker.Static {
+		s.removeWorkerReadyVMLocked(workerID)
+		s.deleteWorkerLocked(workerID)
+	}
+	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -377,7 +587,7 @@ func (s *Service) workerByID(workerID string) (Worker, error) {
 	if !ok {
 		return Worker{}, errWorkerUnknown
 	}
-	if !worker.Available {
+	if !s.workerIsActiveAt(worker, s.cfg.Clock().UTC()) {
 		return Worker{}, errWorkerUnavailable
 	}
 	return worker, nil
@@ -394,8 +604,9 @@ func (s *Service) pickWorker(hardwareSKU string) (Worker, error) {
 	defer s.mu.RUnlock()
 	hardwareSKU = strings.TrimSpace(hardwareSKU)
 	hasAvailable := false
+	now := s.cfg.Clock().UTC()
 	for _, worker := range s.workers {
-		if !worker.Available {
+		if !s.workerIsActiveAt(worker, now) {
 			continue
 		}
 		hasAvailable = true
@@ -453,7 +664,51 @@ func parsePlacementRetry(raw string) (int, error) {
 	return retry, nil
 }
 
-func (s *Service) authenticateInternalVMEvent(ctx context.Context, r *http.Request, workerID string) (jwt.RegisteredClaims, error) {
+func normalizeRegistrationRequest(req model.WorkerRegistrationRequest) (model.WorkerRegistrationRequest, error) {
+	req.Hostname = strings.TrimSpace(req.Hostname)
+	if req.Hostname == "" {
+		return model.WorkerRegistrationRequest{}, errors.New("hostname is required")
+	}
+	baseURL, err := normalizeWorkerBaseURL(req.BaseURL)
+	if err != nil {
+		return model.WorkerRegistrationRequest{}, err
+	}
+	req.BaseURL = baseURL
+	req.HardwareSKU = strings.TrimSpace(req.HardwareSKU)
+	if req.TotalCores < 0 {
+		return model.WorkerRegistrationRequest{}, errors.New("total_cores must be >= 0")
+	}
+	if req.TotalMemoryMiB < 0 {
+		return model.WorkerRegistrationRequest{}, errors.New("total_memory_mib must be >= 0")
+	}
+	if req.MaxLiveSandboxes < 0 {
+		return model.WorkerRegistrationRequest{}, errors.New("max_live_sandboxes must be >= 0")
+	}
+	return req, nil
+}
+
+func normalizeWorkerBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("base_url is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", errors.New("base_url must be a valid URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("base_url must use http or https")
+	}
+	if parsed.Host == "" {
+		return "", errors.New("base_url must include host")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("base_url must not include query or fragment")
+	}
+	return parsed.String(), nil
+}
+
+func (s *Service) authenticateInternalWorkerJWT(ctx context.Context, r *http.Request, workerID string) (jwt.RegisteredClaims, error) {
 	if s.cfg.InternalJWTSecret == "" {
 		return jwt.RegisteredClaims{Subject: workerID}, nil
 	}
@@ -513,9 +768,13 @@ func parseBearerToken(rawAuth string) (string, error) {
 }
 
 func (s *Service) writeError(w http.ResponseWriter, code int, message string) {
+	s.writeJSON(w, code, map[string]any{"error": message})
+}
+
+func (s *Service) writeJSON(w http.ResponseWriter, code int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": message})
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func requestIDFromRequest(r *http.Request) string {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -31,6 +32,8 @@ type Config struct {
 	BrokerID         string
 	BrokerControlURL string
 	Hostname         string
+	AdvertiseURL     string
+	HardwareSKU      string
 	Validator        *auth.Validator
 	Logger           *slog.Logger
 	Telemetry        *telemetry.Recorder
@@ -42,6 +45,9 @@ type Config struct {
 	Clock            func() time.Time
 	Entropy          io.Reader
 	HTTPClient       *http.Client
+
+	RegistrationHeartbeat     time.Duration
+	RegistrationJitterPercent int
 
 	InternalJWTSecret   string
 	InternalJWTIssuer   string
@@ -119,6 +125,7 @@ func NewService(cfg Config) *Service {
 		cfg.WarmPool = warm.NewManager(cfg.Clock, nil)
 	}
 	cfg.BrokerControlURL = strings.TrimSpace(cfg.BrokerControlURL)
+	cfg.AdvertiseURL = strings.TrimSpace(cfg.AdvertiseURL)
 	cfg.InternalJWTSecret = strings.TrimSpace(cfg.InternalJWTSecret)
 	cfg.InternalJWTIssuer = strings.TrimSpace(cfg.InternalJWTIssuer)
 	cfg.InternalJWTAudience = strings.TrimSpace(cfg.InternalJWTAudience)
@@ -127,6 +134,15 @@ func NewService(cfg Config) *Service {
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 3 * time.Second}
+	}
+	if cfg.RegistrationHeartbeat <= 0 {
+		cfg.RegistrationHeartbeat = 30 * time.Second
+	}
+	if cfg.RegistrationJitterPercent < 0 {
+		cfg.RegistrationJitterPercent = 0
+	}
+	if cfg.RegistrationJitterPercent > 95 {
+		cfg.RegistrationJitterPercent = 95
 	}
 
 	authModeMetric := 1.0
@@ -799,6 +815,178 @@ func (s *Service) redirectBackToBroker(w http.ResponseWriter, r *http.Request, r
 	parsed.RawQuery = query.Encode()
 	http.Redirect(w, r, parsed.String(), http.StatusTemporaryRedirect)
 	return nil
+}
+
+func (s *Service) RunRegistrationLoop(ctx context.Context) {
+	if strings.TrimSpace(s.cfg.BrokerControlURL) == "" {
+		return
+	}
+
+	backoff := time.Second
+	registered := false
+	for {
+		err := s.registerWithBroker(ctx)
+		if err == nil {
+			if !registered {
+				s.emitReadyVMSnapshot()
+			}
+			registered = true
+			backoff = time.Second
+			wait := s.registrationDelayWithJitter(s.cfg.RegistrationHeartbeat)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			continue
+		}
+
+		registered = false
+		s.cfg.Logger.Warn("worker registration failed", "worker_id", s.cfg.WorkerID, "error", err, "retry_in", backoff.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
+}
+
+func (s *Service) DeregisterWorker(ctx context.Context) {
+	if strings.TrimSpace(s.cfg.BrokerControlURL) == "" {
+		return
+	}
+	if err := s.deregisterFromBroker(ctx); err != nil {
+		s.cfg.Logger.Warn("worker deregistration failed", "worker_id", s.cfg.WorkerID, "error", err)
+	}
+}
+
+func (s *Service) registrationDelayWithJitter(base time.Duration) time.Duration {
+	if base <= 0 {
+		base = 30 * time.Second
+	}
+	jitterPercent := s.cfg.RegistrationJitterPercent
+	if jitterPercent <= 0 {
+		return base
+	}
+	rangePercent := jitterPercent * 2
+	n, err := rand.Int(s.cfg.Entropy, big.NewInt(int64(rangePercent+1)))
+	if err != nil {
+		return base
+	}
+	offsetPercent := int(n.Int64()) - jitterPercent
+	factor := 1 + float64(offsetPercent)/100.0
+	delay := time.Duration(float64(base) * factor)
+	if delay < time.Second {
+		return time.Second
+	}
+	return delay
+}
+
+func (s *Service) registerWithBroker(ctx context.Context) error {
+	target, err := url.JoinPath(strings.TrimSpace(s.cfg.BrokerControlURL), "/internal/workers", s.cfg.WorkerID, "registration")
+	if err != nil {
+		return err
+	}
+	payload := model.WorkerRegistrationRequest{
+		Hostname:         strings.TrimSpace(s.cfg.Hostname),
+		BaseURL:          workerBaseURL(s.cfg),
+		HardwareSKU:      strings.TrimSpace(s.cfg.HardwareSKU),
+		TotalCores:       s.cfg.TotalCores,
+		TotalMemoryMiB:   s.cfg.TotalMemoryMiB,
+		MaxLiveSandboxes: s.cfg.MaxLiveSandboxes,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	token, err := s.newInternalJWT()
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := s.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("registration rejected: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(responseBytes)))
+	}
+	return nil
+}
+
+func (s *Service) deregisterFromBroker(ctx context.Context) error {
+	target, err := url.JoinPath(strings.TrimSpace(s.cfg.BrokerControlURL), "/internal/workers", s.cfg.WorkerID, "registration")
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
+	if err != nil {
+		return err
+	}
+	token, err := s.newInternalJWT()
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := s.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("deregister rejected: status=%d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *Service) emitReadyVMSnapshot() {
+	s.mu.Lock()
+	events := make([]model.WorkerVMEvent, 0, len(s.vms))
+	for localVMID, record := range s.vms {
+		record.mu.Lock()
+		if record.state == vmStateReady {
+			events = append(events, model.WorkerVMEvent{
+				Event:          model.WorkerVMEventReady,
+				LocalVMID:      localVMID,
+				Virtualization: record.tuple.Virtualization,
+				Image:          record.tuple.Image,
+				CPU:            record.tuple.CPU,
+				Timestamp:      s.cfg.Clock().UTC(),
+			})
+		}
+		record.mu.Unlock()
+	}
+	s.mu.Unlock()
+	for _, event := range events {
+		s.emitVMEvent(event)
+	}
+}
+
+func workerBaseURL(cfg Config) string {
+	if cfg.AdvertiseURL != "" {
+		return cfg.AdvertiseURL
+	}
+	host := strings.TrimSpace(cfg.Hostname)
+	if host == "" {
+		host = cfg.WorkerID
+	}
+	return "http://" + host + ":8081"
 }
 
 func (s *Service) emitVMEvent(event model.WorkerVMEvent) {

@@ -438,3 +438,174 @@ func TestCreateEndpointRecordsPlacementRetryMetric(t *testing.T) {
 		t.Fatalf("expected %s sample with value 1", telemetry.MetricBrokerPlacementRetry)
 	}
 }
+
+func TestInternalRegistrationUpsertAndPlacement(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+
+	registerBody, _ := json.Marshal(map[string]any{
+		"hostname":           "worker-a.local",
+		"base_url":           "http://worker-a.local:8081",
+		"hardware_sku":       "gpu-a100",
+		"total_cores":        16,
+		"total_memory_mib":   32768,
+		"max_live_sandboxes": 8,
+	})
+	registerReq := httptest.NewRequest(http.MethodPut, "/internal/workers/worker_a/registration", bytes.NewReader(registerBody))
+	registerReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-register-1", now))
+	registerRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(registerRR, registerReq)
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 registration, got %d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+
+	createBody, _ := json.Marshal(map[string]any{
+		"image":        "ubuntu:24.04",
+		"cpu":          1,
+		"hardware_sku": "gpu-a100",
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-register-create", now))
+	createRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 after worker registration, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+	if got := createRR.Header().Get("Location"); got != "http://worker-a.local:8081/sandboxes" {
+		t.Fatalf("unexpected redirect location after registration: %s", got)
+	}
+}
+
+func TestInternalRegistrationRejectsInvalidBaseURL(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+	body := strings.NewReader(`{"hostname":"worker-a.local","base_url":"tcp://worker-a.local:8081"}`)
+	req := httptest.NewRequest(http.MethodPut, "/internal/workers/worker_a/registration", body)
+	req.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-register-invalid-url", now))
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid base_url, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestWorkerReRegistrationWithNewBaseURLClearsReadyHints(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+
+	register := func(baseURL, jti string) {
+		t.Helper()
+		registerBody, _ := json.Marshal(map[string]any{
+			"hostname": "worker-a.local",
+			"base_url": baseURL,
+		})
+		registerReq := httptest.NewRequest(http.MethodPut, "/internal/workers/worker_a/registration", bytes.NewReader(registerBody))
+		registerReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", jti, now))
+		registerRR := httptest.NewRecorder()
+		service.Handler().ServeHTTP(registerRR, registerReq)
+		if registerRR.Code != http.StatusOK {
+			t.Fatalf("expected 200 registration, got %d body=%s", registerRR.Code, registerRR.Body.String())
+		}
+	}
+
+	register("http://worker-a-v1.local:8081", "jti-register-v1")
+	eventBody := strings.NewReader(`{"event":"ready","local_vm_id":"550e8400-e29b-41d4-a716-446655440000","virtualization":"vetu","image":"ubuntu:24.04","cpu":1}`)
+	eventReq := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", eventBody)
+	eventReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-register-vm-event", now))
+	eventRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(eventRR, eventReq)
+	if eventRR.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 vm event, got %d body=%s", eventRR.Code, eventRR.Body.String())
+	}
+
+	service.mu.RLock()
+	before := len(service.vmByHash)
+	service.mu.RUnlock()
+	if before == 0 {
+		t.Fatal("expected ready vm index to contain worker hint before re-registration")
+	}
+
+	register("http://worker-a-v2.local:8081", "jti-register-v2")
+	service.mu.RLock()
+	after := len(service.vmByHash)
+	service.mu.RUnlock()
+	if after != 0 {
+		t.Fatalf("expected ready vm hints cleared on base_url replacement, still have %d", after)
+	}
+}
+
+func TestWorkerLeaseExpiryMarksWorkerUnavailable(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	current := now
+	service := NewService(Config{
+		BrokerID:                 "broker_local",
+		Validator:                auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return current }),
+		Clock:                    func() time.Time { return current },
+		InternalJWTSecret:        "secret",
+		InternalJWTIssuer:        "traforato",
+		InternalJWTAudience:      "traforato-internal",
+		WorkerLeaseTTL:           2 * time.Second,
+		WorkerLeaseSweepInterval: time.Second,
+	})
+	registerBody := strings.NewReader(`{"hostname":"worker-a.local","base_url":"http://worker-a.local:8081"}`)
+	registerReq := httptest.NewRequest(http.MethodPut, "/internal/workers/worker_a/registration", registerBody)
+	registerReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-lease-register", now))
+	registerRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(registerRR, registerReq)
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 registration, got %d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+
+	current = current.Add(3 * time.Second)
+	if expired := service.sweepExpiredWorkerLeases(); expired != 1 {
+		t.Fatalf("expected exactly one expired worker, got %d", expired)
+	}
+
+	sandboxID := "sbx-broker_local-worker_a-550e8400-e29b-41d4-a716-446655440000"
+	req := httptest.NewRequest(http.MethodGet, "/sandboxes/"+sandboxID, nil)
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for expired worker sandbox route, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestInternalVMEventRequiresActiveRegistrationInProd(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-events", strings.NewReader(`{"event":"ready","local_vm_id":"550e8400-e29b-41d4-a716-446655440000","virtualization":"vetu","image":"ubuntu:24.04","cpu":1}`))
+	req.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-vm-no-registration", now))
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for vm event without active registration, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}

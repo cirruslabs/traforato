@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -295,5 +296,138 @@ func TestCreateSandboxRedirectsBackToBrokerOnHintConflict(t *testing.T) {
 	}
 	if got := createRR.Header().Get("Location"); got != "http://broker.example.com/sandboxes?placement_retry=2" {
 		t.Fatalf("unexpected redirect location: %s", got)
+	}
+}
+
+func TestRunRegistrationLoopRegistersWorker(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	putCount := 0
+	var lastPayload model.WorkerRegistrationRequest
+	var authHeader string
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/workers/worker_a/registration" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var payload model.WorkerRegistrationRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode registration payload: %v", err)
+		}
+		mu.Lock()
+		putCount++
+		lastPayload = payload
+		authHeader = r.Header.Get("Authorization")
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(model.WorkerRegistrationResponse{
+			WorkerID:                 "worker_a",
+			LeaseTTLSeconds:          120,
+			HeartbeatIntervalSeconds: 30,
+			ExpiresAt:                now.Add(120 * time.Second),
+		})
+	}))
+	defer broker.Close()
+
+	svc := NewService(Config{
+		BrokerID:                  "broker_local",
+		WorkerID:                  "worker_a",
+		BrokerControlURL:          broker.URL,
+		Hostname:                  "worker-a.local",
+		AdvertiseURL:              "http://worker-a.local:9090",
+		HardwareSKU:               "gpu-a100",
+		Validator:                 auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:                     func() time.Time { return now },
+		TotalCores:                8,
+		TotalMemoryMiB:            16384,
+		MaxLiveSandboxes:          6,
+		RegistrationHeartbeat:     20 * time.Millisecond,
+		RegistrationJitterPercent: 0,
+		InternalJWTSecret:         "secret",
+		InternalJWTIssuer:         "traforato",
+		InternalJWTAudience:       "traforato-internal",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		svc.RunRegistrationLoop(ctx)
+		close(done)
+	}()
+	<-done
+
+	mu.Lock()
+	gotCount := putCount
+	gotPayload := lastPayload
+	gotAuth := authHeader
+	mu.Unlock()
+	if gotCount == 0 {
+		t.Fatal("expected registration loop to send at least one PUT registration request")
+	}
+	if gotPayload.BaseURL != "http://worker-a.local:9090" {
+		t.Fatalf("expected advertised base_url in registration payload, got %q", gotPayload.BaseURL)
+	}
+	if gotPayload.HardwareSKU != "gpu-a100" {
+		t.Fatalf("expected hardware_sku in registration payload, got %q", gotPayload.HardwareSKU)
+	}
+	if gotPayload.TotalCores != 8 || gotPayload.TotalMemoryMiB != 16384 || gotPayload.MaxLiveSandboxes != 6 {
+		t.Fatalf("unexpected capacity fields in registration payload: %+v", gotPayload)
+	}
+	if !strings.HasPrefix(gotAuth, "Bearer ") {
+		t.Fatalf("expected bearer auth on registration request, got %q", gotAuth)
+	}
+}
+
+func TestDeregisterWorkerSendsDelete(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	deleteCount := 0
+	var authHeader string
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/workers/worker_a/registration" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			mu.Lock()
+			deleteCount++
+			authHeader = r.Header.Get("Authorization")
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer broker.Close()
+
+	svc := NewService(Config{
+		BrokerID:            "broker_local",
+		WorkerID:            "worker_a",
+		BrokerControlURL:    broker.URL,
+		Hostname:            "worker-a.local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	svc.DeregisterWorker(ctx)
+
+	mu.Lock()
+	gotDeletes := deleteCount
+	gotAuth := authHeader
+	mu.Unlock()
+	if gotDeletes != 1 {
+		t.Fatalf("expected one deregistration DELETE request, got %d", gotDeletes)
+	}
+	if !strings.HasPrefix(gotAuth, "Bearer ") {
+		t.Fatalf("expected bearer auth on deregistration request, got %q", gotAuth)
 	}
 }

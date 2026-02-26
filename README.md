@@ -73,6 +73,10 @@ Internal broker callback endpoint:
 `POST /internal/workers/{worker_id}/vm-events`
 with event payload fields: `event` (`ready|claimed|retired`), `local_vm_id`, `virtualization`, `image`, `cpu`, `timestamp`.
 
+Internal worker registration endpoints:
+1. `PUT /internal/workers/{worker_id}/registration` (register/renew lease)
+2. `DELETE /internal/workers/{worker_id}/registration` (best-effort deregister)
+
 `sandbox_id` format:
 `sbx-<broker_id>-<worker_id>-<uuidv4>`
 (`broker_id` and `worker_id` are hyphen-free component IDs)
@@ -86,7 +90,9 @@ with event payload fields: `event` (`ready|claimed|retired`), `local_vm_id`, `vi
 Required JWT claims in production: `client_id`, `iss`, `aud`, `exp`, `iat`, `jti`.
 Replay protection: in-memory `jti` cache until token expiry.
 
-Internal worker callbacks reuse the same JWT secret, but use `aud=traforato-internal` and `sub=<worker_id>`.
+Internal worker registration and callbacks reuse the same JWT secret, but use `aud=traforato-internal` and `sub=<worker_id>`.
+Broker requires `alg=HS256`, `exp`, `iat`, and `jti` for these internal JWTs.
+In `prod` mode, VM event callbacks are accepted only for workers with an active registration lease.
 
 ## Warm Pool and Capacity
 ```mermaid
@@ -139,6 +145,8 @@ total-cores: 8
 total-memory-mib: 16384
 max-live-sandboxes: 6
 default-ttl: 30m
+registration-heartbeat: 30s
+registration-jitter-percent: 20
 
 log:
   level: info
@@ -153,15 +161,17 @@ pre-pull:
 ```
 
 YAML parsing is strict (unknown keys fail fast). For overlapping values, the YAML file overrides flag and environment defaults.
+Worker registration heartbeat can also be configured with `--registration-heartbeat` / `TRAFORATO_WORKER_REGISTRATION_HEARTBEAT` and jitter with `--registration-jitter-percent` / `TRAFORATO_WORKER_REGISTRATION_JITTER_PERCENT`.
 
-Start a broker (defaults to one worker at `http://localhost:8081`):
+Start a broker:
 
 ```bash
 go run ./cmd/broker
 ```
 
-Optional static worker registration fields on broker include `--worker-hardware-sku` (or `TRAFORATO_BROKER_WORKER_HARDWARE_SKU`).
+Workers self-register over broker internal registration endpoints.
 Broker placement retry budget can be configured via `--placement-retry-max` (`TRAFORATO_BROKER_PLACEMENT_RETRY_MAX`).
+Worker lease settings can be configured via `--worker-lease-ttl` (`TRAFORATO_BROKER_WORKER_LEASE_TTL`) and `--worker-lease-sweep-interval` (`TRAFORATO_BROKER_WORKER_LEASE_SWEEP_INTERVAL`).
 Broker identity can be configured with `--broker-id` (or `TRAFORATO_BROKER_ID`).
 
 Start both broker and worker for local development:
@@ -170,7 +180,7 @@ Start both broker and worker for local development:
 go run ./cmd/dev
 ```
 
-`cmd/dev` also accepts the same worker config file via `--file` (or `TRAFORATO_DEV_WORKER_CONFIG`) and applies it to worker runtime settings, logging, hardware SKU registration, and pre-pull images.
+`cmd/dev` also accepts the same worker config file via `--file` (or `TRAFORATO_DEV_WORKER_CONFIG`) and applies it to worker runtime settings, logging, hardware SKU registration, pre-pull images, and registration heartbeat settings.
 Worker and dev commands support broker identity via `--broker-id` (`TRAFORATO_WORKER_BROKER_ID` / `TRAFORATO_DEV_BROKER_ID`).
 
 By default, all commands run in `dev` no-auth mode (empty `TRAFORATO_JWT_SECRET`).

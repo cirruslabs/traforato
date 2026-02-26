@@ -36,6 +36,22 @@ type WorkerVMEvent struct {
 	Timestamp      time.Time `json:"timestamp"`
 }
 
+type WorkerRegistrationRequest struct {
+	Hostname         string `json:"hostname"`
+	BaseURL          string `json:"base_url"`
+	HardwareSKU      string `json:"hardware_sku,omitempty"`
+	TotalCores       int    `json:"total_cores,omitempty"`
+	TotalMemoryMiB   int    `json:"total_memory_mib,omitempty"`
+	MaxLiveSandboxes int    `json:"max_live_sandboxes,omitempty"`
+}
+
+type WorkerRegistrationResponse struct {
+	WorkerID                 string    `json:"worker_id"`
+	LeaseTTLSeconds          int       `json:"lease_ttl_seconds"`
+	HeartbeatIntervalSeconds int       `json:"heartbeat_interval_seconds"`
+	ExpiresAt                time.Time `json:"expires_at"`
+}
+
 type Exec struct {
 	ExecID     string     `json:"exec_id"`
 	SandboxID  string     `json:"sandbox_id"`

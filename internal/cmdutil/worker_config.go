@@ -16,18 +16,20 @@ import (
 )
 
 type WorkerFileConfig struct {
-	BrokerID         string              `yaml:"broker-id"`
-	BrokerControlURL string              `yaml:"broker-control-url"`
-	WorkerID         string              `yaml:"worker-id"`
-	Hostname         string              `yaml:"hostname"`
-	HardwareSKU      string              `yaml:"hardware-sku"`
-	Virtualization   string              `yaml:"virtualization"`
-	TotalCores       int                 `yaml:"total-cores"`
-	TotalMemoryMiB   int                 `yaml:"total-memory-mib"`
-	MaxLiveSandboxes int                 `yaml:"max-live-sandboxes"`
-	DefaultTTL       time.Duration       `yaml:"default-ttl"`
-	Log              WorkerLogConfig     `yaml:"log"`
-	PrePull          WorkerPrePullConfig `yaml:"pre-pull"`
+	BrokerID                  string              `yaml:"broker-id"`
+	BrokerControlURL          string              `yaml:"broker-control-url"`
+	WorkerID                  string              `yaml:"worker-id"`
+	Hostname                  string              `yaml:"hostname"`
+	HardwareSKU               string              `yaml:"hardware-sku"`
+	Virtualization            string              `yaml:"virtualization"`
+	TotalCores                int                 `yaml:"total-cores"`
+	TotalMemoryMiB            int                 `yaml:"total-memory-mib"`
+	MaxLiveSandboxes          int                 `yaml:"max-live-sandboxes"`
+	DefaultTTL                time.Duration       `yaml:"default-ttl"`
+	RegistrationHeartbeat     time.Duration       `yaml:"registration-heartbeat"`
+	RegistrationJitterPercent int                 `yaml:"registration-jitter-percent"`
+	Log                       WorkerLogConfig     `yaml:"log"`
+	PrePull                   WorkerPrePullConfig `yaml:"pre-pull"`
 }
 
 type WorkerLogConfig struct {
