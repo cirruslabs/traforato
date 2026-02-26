@@ -124,9 +124,7 @@ func (s *Service) RegisterWorker(worker Worker) {
 	worker.Hostname = strings.TrimSpace(worker.Hostname)
 	worker.BaseURL = strings.TrimSpace(worker.BaseURL)
 	worker.HardwareSKU = strings.TrimSpace(worker.HardwareSKU)
-	if !worker.Available {
-		worker.Available = true
-	}
+	worker.Available = true
 	if worker.WorkerID == "" {
 		return
 	}
