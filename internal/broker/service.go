@@ -129,6 +129,7 @@ func (s *Service) RegisterWorker(worker Worker) {
 	worker.HardwareSKU = strings.TrimSpace(worker.HardwareSKU)
 	worker.Available = true
 	if worker.WorkerID == "" {
+		s.cfg.Logger.Warn("RegisterWorker called with empty worker_id, ignoring")
 		return
 	}
 	now := s.cfg.Clock().UTC()
