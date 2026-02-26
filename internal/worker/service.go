@@ -412,7 +412,7 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 	}
 
 	now := s.cfg.Clock().UTC()
-	startType := "cold"
+	startType := model.StartTypeCold
 	claimedHintedVM := false
 	if hintedLocalVMID != "" {
 		if !s.claimReadyVMLocked(hintedLocalVMID, tuple) {
@@ -423,7 +423,7 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 			return
 		}
 		claimedHintedVM = true
-		startType = "warm"
+		startType = model.StartTypeWarm
 		if s.cfg.WarmPool.ConsumeReady(tuple) {
 			// Keep warm counters aligned with concrete VM claims where possible.
 		}
@@ -433,7 +433,7 @@ func (s *Service) handleCreateSandbox(ctx context.Context, w http.ResponseWriter
 		})
 	} else {
 		if s.cfg.WarmPool.ConsumeReady(tuple) {
-			startType = "warm"
+			startType = model.StartTypeWarm
 			_ = s.cfg.Telemetry.Inc(telemetry.MetricWorkerWarmHitTotal, map[string]string{
 				"worker_id": s.cfg.WorkerID,
 				"cpu":       strconv.Itoa(req.CPU),
@@ -639,14 +639,14 @@ func (s *Service) handleCreateExec(w http.ResponseWriter, r *http.Request, princ
 	exec := &model.Exec{
 		ExecID:    execID,
 		SandboxID: sbx.SandboxID,
-		Status:    "exited",
+		Status:    model.ExecStatusExited,
 		ExitCode:  &exitCode,
 		Command:   req.Command,
 		StartedAt: now,
 		Completed: &completed,
 		Frames: []model.Frame{
-			{Type: "stdout", Data: fmt.Sprintf("executed: %s\n", req.Command), Timestamp: now},
-			{Type: "exit", Data: "0", Timestamp: completed},
+			{Type: model.FrameTypeStdout, Data: fmt.Sprintf("executed: %s\n", req.Command), Timestamp: now},
+			{Type: model.FrameTypeExit, Data: "0", Timestamp: completed},
 		},
 	}
 	s.mu.Lock()

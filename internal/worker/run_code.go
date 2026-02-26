@@ -84,7 +84,7 @@ func (s *Service) handleRunCode(w http.ResponseWriter, r *http.Request, principa
 		ExecID:    execID,
 		SandboxID: sandboxID,
 		Runtime:   req.Runtime,
-		Status:    "running",
+		Status:    model.ExecStatusRunning,
 		StartedAt: started,
 	}
 	s.mu.Lock()
@@ -96,7 +96,7 @@ func (s *Service) handleRunCode(w http.ResponseWriter, r *http.Request, principa
 		s.writeJSON(w, http.StatusAccepted, map[string]any{
 			"exec_id":    execID,
 			"sandbox_id": sandboxID,
-			"status":     "running",
+			"status":     model.ExecStatusRunning,
 			"poll_url":   fmt.Sprintf("/sandboxes/%s/exec/%s", sandboxID, execID),
 			"frames_url": fmt.Sprintf("/sandboxes/%s/exec/%s/frames", sandboxID, execID),
 		})
@@ -195,7 +195,7 @@ func executeRunCode(req runCodeRequest) runCodeResult {
 		completedAt := start.Add(time.Duration(duration) * time.Millisecond)
 		stderr := "execution timed out"
 		return runCodeResult{
-			Status:      "exited",
+			Status:      model.ExecStatusExited,
 			Stdout:      "",
 			Stderr:      stderr,
 			Output:      stderr,
@@ -209,7 +209,7 @@ func executeRunCode(req runCodeRequest) runCodeResult {
 		completedAt := time.Now().UTC()
 		stderr := syntaxErrorMessage(runtimeName)
 		return runCodeResult{
-			Status:      "exited",
+			Status:      model.ExecStatusExited,
 			Stdout:      "",
 			Stderr:      stderr,
 			Output:      stderr,
@@ -223,7 +223,7 @@ func executeRunCode(req runCodeRequest) runCodeResult {
 	if runtimeError := runtimeErrorMessage(runtimeName, code); runtimeError != "" {
 		completedAt := time.Now().UTC()
 		return runCodeResult{
-			Status:      "exited",
+			Status:      model.ExecStatusExited,
 			Stdout:      "",
 			Stderr:      runtimeError,
 			Output:      runtimeError,
@@ -236,7 +236,7 @@ func executeRunCode(req runCodeRequest) runCodeResult {
 	stdout := extractRuntimeStdout(runtimeName, code)
 	completedAt := time.Now().UTC()
 	return runCodeResult{
-		Status:      "exited",
+		Status:      model.ExecStatusExited,
 		Stdout:      stdout,
 		Stderr:      "",
 		Output:      stdout,
@@ -250,12 +250,12 @@ func buildFramesFromRunResult(result runCodeResult) []model.Frame {
 	frames := make([]model.Frame, 0, 3)
 	now := result.CompletedAt
 	if result.Stdout != "" {
-		frames = append(frames, model.Frame{Type: "stdout", Data: result.Stdout, Timestamp: now})
+		frames = append(frames, model.Frame{Type: model.FrameTypeStdout, Data: result.Stdout, Timestamp: now})
 	}
 	if result.Stderr != "" {
-		frames = append(frames, model.Frame{Type: "stderr", Data: result.Stderr, Timestamp: now})
+		frames = append(frames, model.Frame{Type: model.FrameTypeStderr, Data: result.Stderr, Timestamp: now})
 	}
-	frames = append(frames, model.Frame{Type: "exit", Data: strconv.Itoa(result.ExitCode), Timestamp: now})
+	frames = append(frames, model.Frame{Type: model.FrameTypeExit, Data: strconv.Itoa(result.ExitCode), Timestamp: now})
 	return frames
 }
 

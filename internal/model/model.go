@@ -27,6 +27,25 @@ const (
 	WorkerVMEventRetired = "retired"
 )
 
+// Exec status values.
+const (
+	ExecStatusRunning = "running"
+	ExecStatusExited  = "exited"
+)
+
+// Sandbox start type values.
+const (
+	StartTypeCold = "cold"
+	StartTypeWarm = "warm"
+)
+
+// Frame type values.
+const (
+	FrameTypeStdout = "stdout"
+	FrameTypeStderr = "stderr"
+	FrameTypeExit   = "exit"
+)
+
 type WorkerVMEvent struct {
 	Event          string    `json:"event"`
 	LocalVMID      string    `json:"local_vm_id"`
