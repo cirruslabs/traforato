@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/fedor/traforato/internal/auth"
 )
@@ -52,9 +51,7 @@ func (s *Service) handleProxy(w http.ResponseWriter, r *http.Request, principal 
 		req.Header.Set("X-Forwarded-Host", requestHost(r))
 		req.Header.Set("X-Forwarded-Port", requestPort(r))
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 30 * time.Second
-	proxy.Transport = transport
+	proxy.Transport = s.proxyTransport
 	proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, proxyErr error) {
 		status := http.StatusBadGateway
 		message := "upstream not reachable"

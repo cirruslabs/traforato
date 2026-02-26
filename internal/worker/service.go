@@ -55,7 +55,8 @@ type Config struct {
 }
 
 type Service struct {
-	cfg Config
+	cfg            Config
+	proxyTransport http.RoundTripper
 
 	mu           sync.Mutex
 	sandboxes    map[string]*sandboxState
@@ -159,11 +160,15 @@ func NewService(cfg Config) *Service {
 	})
 	cfg.WarmPool.OnWorkerRegister(cfg.MaxLiveSandboxes)
 
+	proxyTransport := http.DefaultTransport.(*http.Transport).Clone()
+	proxyTransport.ResponseHeaderTimeout = 30 * time.Second
+
 	svc := &Service{
-		cfg:       cfg,
-		sandboxes: make(map[string]*sandboxState),
-		execs:     make(map[string]*model.Exec),
-		vms:       make(map[string]*vmRecord),
+		cfg:            cfg,
+		proxyTransport: proxyTransport,
+		sandboxes:      make(map[string]*sandboxState),
+		execs:          make(map[string]*model.Exec),
+		vms:            make(map[string]*vmRecord),
 	}
 	svc.bootstrapReadyVMs()
 	return svc
