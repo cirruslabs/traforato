@@ -1072,13 +1072,18 @@ func normalizeTuple(tuple warm.Tuple) warm.Tuple {
 	return tuple
 }
 
+var (
+	errSandboxNotFound   = errors.New("sandbox not found")
+	errOwnershipMismatch = errors.New("sandbox ownership mismatch")
+)
+
 func (s *Service) getOwnedSandbox(principal auth.Principal, sandboxID string) (*sandboxState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	sbx, ok := s.sandboxes[sandboxID]
 	if !ok {
-		return nil, errors.New("sandbox not found")
+		return nil, errSandboxNotFound
 	}
 	if err := s.ensureOwnership(principal, sbx.OwnerClientID); err != nil {
 		return nil, err
@@ -1091,7 +1096,7 @@ func (s *Service) ensureOwnership(principal auth.Principal, ownerClientID string
 		return nil
 	}
 	if principal.ClientID != ownerClientID {
-		return fmt.Errorf("sandbox ownership mismatch")
+		return errOwnershipMismatch
 	}
 	return nil
 }
@@ -1108,9 +1113,9 @@ func (s *Service) writeOwnedError(w http.ResponseWriter, err error) {
 	switch {
 	case err == nil:
 		return
-	case strings.Contains(err.Error(), "not found"):
+	case errors.Is(err, errSandboxNotFound):
 		s.writeError(w, http.StatusNotFound, err.Error())
-	case strings.Contains(err.Error(), "ownership"):
+	case errors.Is(err, errOwnershipMismatch):
 		s.writeError(w, http.StatusForbidden, err.Error())
 	default:
 		s.writeError(w, http.StatusUnauthorized, err.Error())
