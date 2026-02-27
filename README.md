@@ -120,6 +120,7 @@ Main public routes:
 12. `GET /sandboxes/{sandbox_id}/exec/{exec_id}/frames`
 13. `ANY /sandboxes/{sandbox_id}/proxy/{port}[/{path...}]`
 14. `GET /sandboxes/{sandbox_id}/ports/{port}/url?protocol=http|https|ws|wss`
+15. `GET /metrics/sandboxes` (unauthenticated broker availability metrics)
 
 Full endpoint list, routing behavior, and internal control-plane APIs are documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
 

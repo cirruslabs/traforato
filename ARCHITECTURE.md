@@ -62,6 +62,7 @@ Public endpoints:
 16. `ANY /sandboxes/{sandbox_id}/proxy/{port}`
 17. `ANY /sandboxes/{sandbox_id}/proxy/{port}/{path...}`
 18. `GET /sandboxes/{sandbox_id}/ports/{port}/url?protocol=http|https|ws|wss`
+19. `GET /metrics/sandboxes` (broker-only, unauthenticated plain-text availability snapshot)
 
 Control-plane internal endpoints:
 1. `PUT /internal/workers/{worker_id}/registration` (register or renew lease)
@@ -87,6 +88,10 @@ Rules:
 |---|---|---|
 | `prod` | JWT secret configured | Broker validates non-sandbox entrypoints; worker validates JWT and enforces ownership. |
 | `dev` | JWT secret missing | Broker and worker skip JWT checks; startup warning and auth-mode metric emitted. |
+
+Broker unauthenticated probe/metrics endpoints:
+1. `GET /healthz`
+2. `GET /metrics/sandboxes` with high-level counters and per-kind `(virtualization, image, cpu)` availability.
 
 Production JWT requirements:
 1. Required claims: `client_id`, `iss`, `aud`, `exp`, `iat`, `jti`.

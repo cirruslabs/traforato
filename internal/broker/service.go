@@ -263,6 +263,10 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 		return
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/metrics/sandboxes" {
+		s.handleSandboxMetrics(w)
+		return
+	}
 
 	if route, ok := extractInternalWorkerRoute(r); ok {
 		switch route.Route {

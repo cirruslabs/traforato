@@ -72,6 +72,276 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestSandboxMetricsAllowsUnauthenticatedProbeInProd(t *testing.T) {
+	now := time.Date(2026, 2, 27, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:  "broker_local",
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:     func() time.Time { return now },
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/sandboxes", nil)
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for unauth metrics probe, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSandboxMetricsOutputShapeAndSortOrder(t *testing.T) {
+	now := time.Date(2026, 2, 27, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:  "broker_local",
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:     func() time.Time { return now },
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_a",
+		BaseURL:   "http://worker-a.local:8081",
+		Available: true,
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_b",
+		BaseURL:   "http://worker-b.local:8081",
+		Available: true,
+	})
+
+	addReadyVMHint(t, service, "worker_a", "550e8400-e29b-41d4-a716-446655440001", "vetu", "ubuntu:24.04", 2, now)
+	addReadyVMHint(t, service, "worker_a", "550e8400-e29b-41d4-a716-446655440002", "tart", model.DefaultTartImage, 1, now)
+	addReadyVMHint(t, service, "worker_b", "550e8400-e29b-41d4-a716-446655440003", "vetu", "alpine:3.20", 1, now)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/sandboxes", nil)
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("expected text/plain content type, got %q", got)
+	}
+
+	fields, rows := parseSandboxMetricsOutput(t, rr.Body.String())
+	if fields["generated_at"] != now.Format(time.RFC3339) {
+		t.Fatalf("expected generated_at=%s, got %q", now.Format(time.RFC3339), fields["generated_at"])
+	}
+	if fields["broker_id"] != "broker_local" {
+		t.Fatalf("expected broker_id=broker_local, got %q", fields["broker_id"])
+	}
+
+	requiredKeys := []string{
+		"workers_registered_total",
+		"workers_active_total",
+		"workers_unavailable_total",
+		"workers_static_total",
+		"workers_dynamic_total",
+		"available_sandboxes_total",
+		"available_sandbox_kinds_total",
+	}
+	for _, key := range requiredKeys {
+		if _, ok := fields[key]; !ok {
+			t.Fatalf("expected key %q in metrics output; got fields=%v", key, fields)
+		}
+	}
+
+	expectedRows := []string{
+		"tart\t" + model.DefaultTartImage + "\t1\t1",
+		"vetu\talpine:3.20\t1\t1",
+		"vetu\tubuntu:24.04\t2\t1",
+	}
+	if len(rows) != len(expectedRows) {
+		t.Fatalf("expected %d rows, got %d rows=%v", len(expectedRows), len(rows), rows)
+	}
+	for i := range expectedRows {
+		if rows[i] != expectedRows[i] {
+			t.Fatalf("expected row %d to be %q, got %q", i, expectedRows[i], rows[i])
+		}
+	}
+}
+
+func TestSandboxMetricsAggregatesCountsAcrossWorkers(t *testing.T) {
+	now := time.Date(2026, 2, 27, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:  "broker_local",
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:     func() time.Time { return now },
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_a",
+		BaseURL:   "http://worker-a.local:8081",
+		Available: true,
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_b",
+		BaseURL:   "http://worker-b.local:8081",
+		Available: true,
+	})
+
+	addReadyVMHint(t, service, "worker_a", "550e8400-e29b-41d4-a716-446655440011", "vetu", "ubuntu:24.04", 1, now)
+	addReadyVMHint(t, service, "worker_a", "550e8400-e29b-41d4-a716-446655440012", "vetu", "ubuntu:24.04", 1, now)
+	addReadyVMHint(t, service, "worker_b", "550e8400-e29b-41d4-a716-446655440013", "vetu", "ubuntu:24.04", 1, now)
+	addReadyVMHint(t, service, "worker_b", "550e8400-e29b-41d4-a716-446655440014", "vetu", "ubuntu:24.04", 2, now)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/sandboxes", nil)
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	fields, rows := parseSandboxMetricsOutput(t, rr.Body.String())
+	if fields["available_sandboxes_total"] != "4" {
+		t.Fatalf("expected available_sandboxes_total=4, got %q", fields["available_sandboxes_total"])
+	}
+	if fields["available_sandbox_kinds_total"] != "2" {
+		t.Fatalf("expected available_sandbox_kinds_total=2, got %q", fields["available_sandbox_kinds_total"])
+	}
+
+	expectedRows := []string{
+		"vetu\tubuntu:24.04\t1\t3",
+		"vetu\tubuntu:24.04\t2\t1",
+	}
+	if len(rows) != len(expectedRows) {
+		t.Fatalf("expected %d rows, got %d rows=%v", len(expectedRows), len(rows), rows)
+	}
+	for i := range expectedRows {
+		if rows[i] != expectedRows[i] {
+			t.Fatalf("expected row %d to be %q, got %q", i, expectedRows[i], rows[i])
+		}
+	}
+}
+
+func TestSandboxMetricsFiltersUnavailableOrUnknownWorkerHints(t *testing.T) {
+	now := time.Date(2026, 2, 27, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:  "broker_local",
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:     func() time.Time { return now },
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_static_active",
+		BaseURL:   "http://worker-static-active.local:8081",
+		Available: true,
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_static_unavailable",
+		BaseURL:   "http://worker-static-unavailable.local:8081",
+		Available: true,
+	})
+	service.SetWorkerAvailability("worker_static_unavailable", false)
+
+	service.mu.Lock()
+	service.upsertWorkerLocked(Worker{
+		WorkerID:       "worker_dynamic_active",
+		BaseURL:        "http://worker-dynamic-active.local:8081",
+		Available:      true,
+		Static:         false,
+		LastSeenAt:     now,
+		LeaseExpiresAt: now.Add(60 * time.Second),
+	})
+	service.upsertWorkerLocked(Worker{
+		WorkerID:       "worker_dynamic_expired",
+		BaseURL:        "http://worker-dynamic-expired.local:8081",
+		Available:      true,
+		Static:         false,
+		LastSeenAt:     now.Add(-120 * time.Second),
+		LeaseExpiresAt: now.Add(-60 * time.Second),
+	})
+	service.mu.Unlock()
+
+	addReadyVMHint(t, service, "worker_static_active", "550e8400-e29b-41d4-a716-446655440021", "vetu", "ubuntu:24.04", 1, now)
+	addReadyVMHint(t, service, "worker_static_unavailable", "550e8400-e29b-41d4-a716-446655440022", "vetu", "alpine:3.20", 1, now)
+	addReadyVMHint(t, service, "worker_dynamic_active", "550e8400-e29b-41d4-a716-446655440023", "tart", model.DefaultTartImage, 1, now)
+	addReadyVMHint(t, service, "worker_dynamic_expired", "550e8400-e29b-41d4-a716-446655440024", "vetu", "debian:12", 1, now)
+	addReadyVMHint(t, service, "worker_missing", "550e8400-e29b-41d4-a716-446655440025", "vetu", "fedora:41", 1, now)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics/sandboxes", nil)
+	rr := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	fields, rows := parseSandboxMetricsOutput(t, rr.Body.String())
+	if fields["workers_registered_total"] != "4" {
+		t.Fatalf("expected workers_registered_total=4, got %q", fields["workers_registered_total"])
+	}
+	if fields["workers_active_total"] != "2" {
+		t.Fatalf("expected workers_active_total=2, got %q", fields["workers_active_total"])
+	}
+	if fields["workers_unavailable_total"] != "2" {
+		t.Fatalf("expected workers_unavailable_total=2, got %q", fields["workers_unavailable_total"])
+	}
+	if fields["workers_static_total"] != "2" {
+		t.Fatalf("expected workers_static_total=2, got %q", fields["workers_static_total"])
+	}
+	if fields["workers_dynamic_total"] != "2" {
+		t.Fatalf("expected workers_dynamic_total=2, got %q", fields["workers_dynamic_total"])
+	}
+	if fields["available_sandboxes_total"] != "2" {
+		t.Fatalf("expected available_sandboxes_total=2, got %q", fields["available_sandboxes_total"])
+	}
+	if fields["available_sandbox_kinds_total"] != "2" {
+		t.Fatalf("expected available_sandbox_kinds_total=2, got %q", fields["available_sandbox_kinds_total"])
+	}
+
+	expectedRows := []string{
+		"tart\t" + model.DefaultTartImage + "\t1\t1",
+		"vetu\tubuntu:24.04\t1\t1",
+	}
+	if len(rows) != len(expectedRows) {
+		t.Fatalf("expected %d rows, got %d rows=%v", len(expectedRows), len(rows), rows)
+	}
+	for i := range expectedRows {
+		if rows[i] != expectedRows[i] {
+			t.Fatalf("expected row %d to be %q, got %q", i, expectedRows[i], rows[i])
+		}
+	}
+}
+
+func TestSandboxMetricsEndpointDoesNotConsumeReadyHints(t *testing.T) {
+	now := time.Date(2026, 2, 27, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:  "broker_local",
+		Validator: auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:     func() time.Time { return now },
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:  "worker_a",
+		BaseURL:   "http://worker-a.local:8081",
+		Available: true,
+	})
+	localVMID := "550e8400-e29b-41d4-a716-446655440031"
+	addReadyVMHint(t, service, "worker_a", localVMID, "vetu", "ubuntu:24.04", 2, now)
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics/sandboxes", nil)
+	metricsRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(metricsRR, metricsReq)
+	if metricsRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 from metrics endpoint, got %d body=%s", metricsRR.Code, metricsRR.Body.String())
+	}
+
+	createBody, _ := json.Marshal(map[string]any{
+		"virtualization": "vetu",
+		"image":          "ubuntu:24.04",
+		"cpu":            2,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-metrics-does-not-consume", now))
+	createRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 after metrics probe, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+	location, err := url.Parse(createRR.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("Parse(location): %v", err)
+	}
+	if got := location.Query().Get("local_vm_id"); got != localVMID {
+		t.Fatalf("expected local_vm_id=%s after metrics probe, got %q location=%s", localVMID, got, createRR.Header().Get("Location"))
+	}
+}
+
 func TestSandboxRoutesRedirectWithoutJWTValidation(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	service := NewService(Config{
@@ -741,4 +1011,69 @@ func TestInternalVMEventRequiresActiveRegistrationInProd(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for vm event without active registration, got %d body=%s", rr.Code, rr.Body.String())
 	}
+}
+
+func addReadyVMHint(
+	t *testing.T,
+	service *Service,
+	workerID string,
+	localVMID string,
+	virtualization string,
+	image string,
+	cpu int,
+	now time.Time,
+) {
+	t.Helper()
+
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if err := service.applyVMEventLocked(workerID, model.WorkerVMEvent{
+		Event:          model.WorkerVMEventReady,
+		LocalVMID:      localVMID,
+		Virtualization: virtualization,
+		Image:          image,
+		CPU:            cpu,
+		Timestamp:      now,
+	}); err != nil {
+		t.Fatalf("applyVMEventLocked(): %v", err)
+	}
+}
+
+func parseSandboxMetricsOutput(t *testing.T, body string) (map[string]string, []string) {
+	t.Helper()
+
+	lines := strings.Split(body, "\n")
+	if len(lines) == 0 || lines[0] != "# traforato broker sandbox availability" {
+		t.Fatalf("unexpected metrics header: %q", body)
+	}
+
+	fields := make(map[string]string)
+	line := 1
+	for ; line < len(lines); line++ {
+		if lines[line] == "" {
+			line++
+			break
+		}
+		parts := strings.SplitN(lines[line], "=", 2)
+		if len(parts) != 2 {
+			t.Fatalf("invalid key-value line %q in body=%q", lines[line], body)
+		}
+		fields[parts[0]] = parts[1]
+	}
+
+	if line >= len(lines) {
+		t.Fatalf("missing table header in body=%q", body)
+	}
+	if lines[line] != "virtualization\timage\tcpu\tavailable" {
+		t.Fatalf("unexpected table header %q in body=%q", lines[line], body)
+	}
+
+	rows := make([]string, 0, len(lines)-line-1)
+	for _, row := range lines[line+1:] {
+		if row == "" {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return fields, rows
 }
