@@ -91,6 +91,12 @@ type WorkerRegistrationResponse struct {
 	ExpiresAt                time.Time `json:"expires_at"`
 }
 
+type WorkerVMStartAssignment struct {
+	Virtualization string `json:"virtualization"`
+	Image          string `json:"image"`
+	CPU            int    `json:"cpu"`
+}
+
 type Exec struct {
 	ExecID     string     `json:"exec_id"`
 	SandboxID  string     `json:"sandbox_id"`

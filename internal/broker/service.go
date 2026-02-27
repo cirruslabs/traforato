@@ -55,11 +55,12 @@ type Service struct {
 	cfg             Config
 	internalReplays *auth.ReplayCache
 
-	mu          sync.RWMutex
-	workersByID map[string]Worker
-	workers     []Worker
-	readyByVirt map[string]map[imageCPUKey]map[string]struct{}
-	vmByHash    map[string]vmMeta
+	mu                 sync.RWMutex
+	workersByID        map[string]Worker
+	workers            []Worker
+	readyByVirt        map[string]map[imageCPUKey]map[string]struct{}
+	vmByHash           map[string]vmMeta
+	pendingVMStartsByW map[string][]warm.Tuple
 }
 
 const (
@@ -114,11 +115,12 @@ func NewService(cfg Config) *Service {
 	}
 	_ = cfg.Telemetry.SetGauge(telemetry.MetricServiceAuthMode, authModeMetric, nil)
 	return &Service{
-		cfg:             cfg,
-		internalReplays: auth.NewReplayCache(cfg.Clock),
-		workersByID:     make(map[string]Worker),
-		readyByVirt:     make(map[string]map[imageCPUKey]map[string]struct{}),
-		vmByHash:        make(map[string]vmMeta),
+		cfg:                cfg,
+		internalReplays:    auth.NewReplayCache(cfg.Clock),
+		workersByID:        make(map[string]Worker),
+		readyByVirt:        make(map[string]map[imageCPUKey]map[string]struct{}),
+		vmByHash:           make(map[string]vmMeta),
+		pendingVMStartsByW: make(map[string][]warm.Tuple),
 	}
 }
 
@@ -155,6 +157,7 @@ func (s *Service) SetWorkerAvailability(workerID string, available bool) {
 	worker.Available = available
 	if !available {
 		s.removeWorkerReadyVMLocked(workerID)
+		delete(s.pendingVMStartsByW, workerID)
 	}
 	s.upsertWorkerLocked(worker)
 }
@@ -193,6 +196,7 @@ func (s *Service) sweepExpiredWorkerLeases() int {
 		worker.Available = false
 		s.upsertWorkerLocked(worker)
 		s.removeWorkerReadyVMLocked(workerID)
+		delete(s.pendingVMStartsByW, workerID)
 		expired++
 	}
 	return expired
@@ -215,6 +219,7 @@ func (s *Service) upsertWorkerLocked(worker Worker) {
 
 func (s *Service) deleteWorkerLocked(workerID string) {
 	delete(s.workersByID, workerID)
+	delete(s.pendingVMStartsByW, workerID)
 	for i := range s.workers {
 		if s.workers[i].WorkerID == workerID {
 			s.workers = append(s.workers[:i], s.workers[i+1:]...)
@@ -266,6 +271,11 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 				s.handleInternalVMEvent(ctx, w, r, route.WorkerID, logger)
 				return
 			}
+		case internalWorkerRouteVMStart:
+			if r.Method == http.MethodPost {
+				s.handleInternalVMStart(ctx, w, r, route.WorkerID, logger)
+				return
+			}
 		case internalWorkerRouteRegistration:
 			if r.Method == http.MethodPut {
 				s.handleInternalRegister(ctx, w, r, route.WorkerID, logger)
@@ -295,6 +305,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 
 const (
 	internalWorkerRouteVMEvents     = "vm-events"
+	internalWorkerRouteVMStart      = "vm-start"
 	internalWorkerRouteRegistration = "registration"
 )
 
@@ -311,7 +322,7 @@ func extractInternalWorkerRoute(r *http.Request) (internalWorkerRoute, bool) {
 			return internalWorkerRoute{}, false
 		}
 		switch parts[3] {
-		case internalWorkerRouteVMEvents, internalWorkerRouteRegistration:
+		case internalWorkerRouteVMEvents, internalWorkerRouteVMStart, internalWorkerRouteRegistration:
 			return internalWorkerRoute{
 				WorkerID: workerID,
 				Route:    parts[3],
@@ -405,6 +416,48 @@ func (s *Service) handleInternalVMEvent(ctx context.Context, w http.ResponseWrit
 		"local_vm_id", event.LocalVMID,
 	).Info("applied worker vm event")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Service) handleInternalVMStart(ctx context.Context, w http.ResponseWriter, r *http.Request, workerID string, logger *slog.Logger) {
+	if _, err := s.authenticateInternalWorkerJWT(ctx, r, workerID); err != nil {
+		s.writeError(w, http.StatusUnauthorized, "unauthorized vm start request")
+		return
+	}
+
+	s.mu.Lock()
+	worker, ok := s.workersByID[workerID]
+	if !ok {
+		s.mu.Unlock()
+		if s.cfg.Validator.Mode() == auth.ModeProd {
+			s.writeError(w, http.StatusUnauthorized, "worker must self-register")
+			return
+		}
+		s.writeError(w, http.StatusNotFound, "worker id unknown")
+		return
+	}
+	if s.cfg.Validator.Mode() == auth.ModeProd && !s.workerIsActiveAt(worker, s.cfg.Clock().UTC()) {
+		s.mu.Unlock()
+		s.writeError(w, http.StatusUnauthorized, "worker must self-register")
+		return
+	}
+	tuple, ok := s.dequeuePendingVMStartLocked(workerID)
+	s.mu.Unlock()
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	logger.With(
+		"worker_id", workerID,
+		"virtualization", tuple.Virtualization,
+		"image", tuple.Image,
+		"cpu", tuple.CPU,
+	).Info("assigned vm start request to worker")
+	s.writeJSON(w, http.StatusOK, model.WorkerVMStartAssignment{
+		Virtualization: tuple.Virtualization,
+		Image:          tuple.Image,
+		CPU:            tuple.CPU,
+	})
 }
 
 func (s *Service) handleInternalRegister(ctx context.Context, w http.ResponseWriter, r *http.Request, workerID string, logger *slog.Logger) {
@@ -560,6 +613,7 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 	if req.HardwareSKU != "" {
 		logger = logger.With("hardware_sku", req.HardwareSKU)
 	}
+	s.enqueuePendingVMStart(worker.WorkerID, tuple)
 	logger.Info("redirecting create request to worker")
 
 	target, err := buildCreateRedirectURL(worker.BaseURL, "", retry)
@@ -573,6 +627,34 @@ func (s *Service) handleCreateRedirect(ctx context.Context, w http.ResponseWrite
 	})
 	s.injectTraceHeaders(ctx, w.Header())
 	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+}
+
+func (s *Service) enqueuePendingVMStart(workerID string, tuple warm.Tuple) {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return
+	}
+	tuple = tuple.Normalize()
+	if tuple.Image == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingVMStartsByW[workerID] = append(s.pendingVMStartsByW[workerID], tuple)
+}
+
+func (s *Service) dequeuePendingVMStartLocked(workerID string) (warm.Tuple, bool) {
+	queue := s.pendingVMStartsByW[workerID]
+	if len(queue) == 0 {
+		return warm.Tuple{}, false
+	}
+	tuple := queue[0]
+	if len(queue) == 1 {
+		delete(s.pendingVMStartsByW, workerID)
+	} else {
+		s.pendingVMStartsByW[workerID] = queue[1:]
+	}
+	return tuple, true
 }
 
 var (

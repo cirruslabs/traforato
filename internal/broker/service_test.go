@@ -374,6 +374,62 @@ func TestCreateEndpointPlacementRetryBudget(t *testing.T) {
 	}
 }
 
+func TestInternalVMStartReturnsColdPlacementAssignment(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		BrokerID:            "broker_local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+	service.RegisterWorker(Worker{
+		WorkerID:    "worker_a",
+		Hostname:    "worker-a.local",
+		BaseURL:     "http://worker-a.local:8081",
+		HardwareSKU: "cpu-standard",
+		Available:   true,
+	})
+
+	createBody, _ := json.Marshal(map[string]any{
+		"image":          "ubuntu:24.04",
+		"cpu":            2,
+		"virtualization": "vetu",
+		"hardware_sku":   "cpu-standard",
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/sandboxes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+makeBrokerJWT(t, "secret", "jti-vm-start-enqueue", now))
+	createRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307 create redirect, got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-start", nil)
+	startReq.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-vm-start-assign-1", now))
+	startRR := httptest.NewRecorder()
+	service.Handler().ServeHTTP(startRR, startReq)
+	if startRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 vm-start assignment, got %d body=%s", startRR.Code, startRR.Body.String())
+	}
+	var assignment model.WorkerVMStartAssignment
+	if err := json.Unmarshal(startRR.Body.Bytes(), &assignment); err != nil {
+		t.Fatalf("Unmarshal vm-start assignment: %v body=%s", err, startRR.Body.String())
+	}
+	if assignment.Virtualization != "vetu" || assignment.Image != "ubuntu:24.04" || assignment.CPU != 2 {
+		t.Fatalf("unexpected vm-start assignment: %+v", assignment)
+	}
+
+	startReq2 := httptest.NewRequest(http.MethodPost, "/internal/workers/worker_a/vm-start", nil)
+	startReq2.Header.Set("Authorization", "Bearer "+makeInternalWorkerJWT(t, "secret", "traforato", "worker_a", "jti-vm-start-assign-2", now))
+	startRR2 := httptest.NewRecorder()
+	service.Handler().ServeHTTP(startRR2, startReq2)
+	if startRR2.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 when no pending vm-start assignments, got %d body=%s", startRR2.Code, startRR2.Body.String())
+	}
+}
+
 func TestInternalVMEventAuthAndSubjectMatch(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	service := NewService(Config{

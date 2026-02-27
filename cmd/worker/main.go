@@ -156,6 +156,9 @@ func run(args []string) error {
 
 	ctx, stop := cmdutil.SignalContext()
 	defer stop()
+	if err := svc.RegisterInitial(ctx); err != nil {
+		return fmt.Errorf("initial worker registration failed: %w", err)
+	}
 	go svc.RunRegistrationLoop(ctx)
 
 	runErr := cmdutil.RunServer(ctx, cmdutil.ServerConfig{

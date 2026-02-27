@@ -66,7 +66,8 @@ Public endpoints:
 Control-plane internal endpoints:
 1. `PUT /internal/workers/{worker_id}/registration` (register or renew lease)
 2. `DELETE /internal/workers/{worker_id}/registration` (best-effort deregister)
-3. `POST /internal/workers/{worker_id}/vm-events` with fields:
+3. `POST /internal/workers/{worker_id}/vm-start` (worker asks broker for one VM start assignment)
+4. `POST /internal/workers/{worker_id}/vm-events` with fields:
    `event` (`ready|claimed|retired`), `local_vm_id`, `virtualization`, `image`, `cpu`, `timestamp`.
 
 Placement metadata:

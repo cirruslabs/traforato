@@ -871,6 +871,20 @@ func (s *Service) redirectBackToBroker(w http.ResponseWriter, r *http.Request, r
 	return nil
 }
 
+func (s *Service) RegisterInitial(ctx context.Context) error {
+	if strings.TrimSpace(s.cfg.BrokerControlURL) == "" {
+		return nil
+	}
+	if err := s.registerWithBroker(ctx); err != nil {
+		return err
+	}
+	s.emitReadyVMSnapshot()
+	if err := s.requestStartAndReportReady(ctx); err != nil {
+		s.cfg.Logger.Warn("worker vm start request failed", "worker_id", s.cfg.WorkerID, "error", err)
+	}
+	return nil
+}
+
 func (s *Service) RunRegistrationLoop(ctx context.Context) {
 	if strings.TrimSpace(s.cfg.BrokerControlURL) == "" {
 		return
@@ -885,6 +899,9 @@ func (s *Service) RunRegistrationLoop(ctx context.Context) {
 				s.emitReadyVMSnapshot()
 			}
 			registered = true
+			if err := s.requestStartAndReportReady(ctx); err != nil {
+				s.cfg.Logger.Warn("worker vm start request failed", "worker_id", s.cfg.WorkerID, "error", err)
+			}
 			backoff = time.Second
 			wait := s.registrationDelayWithJitter(s.cfg.RegistrationHeartbeat)
 			select {
@@ -907,6 +924,29 @@ func (s *Service) RunRegistrationLoop(ctx context.Context) {
 			backoff = 30 * time.Second
 		}
 	}
+}
+
+func (s *Service) requestStartAndReportReady(ctx context.Context) error {
+	tuple, ok, err := s.requestVMStartAssignment(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	localVMID, err := s.startAssignedVM(tuple)
+	if err != nil {
+		return err
+	}
+	s.emitVMEvent(ctx, model.WorkerVMEvent{
+		Event:          model.WorkerVMEventReady,
+		LocalVMID:      localVMID,
+		Virtualization: tuple.Virtualization,
+		Image:          tuple.Image,
+		CPU:            tuple.CPU,
+		Timestamp:      s.cfg.Clock().UTC(),
+	})
+	return nil
 }
 
 func (s *Service) DeregisterWorker(ctx context.Context) {
@@ -979,6 +1019,74 @@ func (s *Service) registerWithBroker(ctx context.Context) error {
 		return fmt.Errorf("registration rejected: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(responseBytes)))
 	}
 	return nil
+}
+
+func (s *Service) requestVMStartAssignment(ctx context.Context) (warm.Tuple, bool, error) {
+	target, err := url.JoinPath(strings.TrimSpace(s.cfg.BrokerControlURL), "/internal/workers", s.cfg.WorkerID, "vm-start")
+	if err != nil {
+		return warm.Tuple{}, false, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, nil)
+	if err != nil {
+		return warm.Tuple{}, false, err
+	}
+	token, err := s.newInternalJWT()
+	if err != nil {
+		return warm.Tuple{}, false, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := s.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return warm.Tuple{}, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return warm.Tuple{}, false, nil
+	}
+	responseBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+	if resp.StatusCode != http.StatusOK {
+		return warm.Tuple{}, false, fmt.Errorf("vm start request rejected: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(responseBytes)))
+	}
+	var assignment model.WorkerVMStartAssignment
+	if err := json.Unmarshal(responseBytes, &assignment); err != nil {
+		return warm.Tuple{}, false, fmt.Errorf("decode vm start assignment: %w", err)
+	}
+	tuple := warm.Tuple{
+		Virtualization: assignment.Virtualization,
+		Image:          assignment.Image,
+		CPU:            assignment.CPU,
+	}.Normalize()
+	if tuple.Image == "" {
+		return warm.Tuple{}, false, errors.New("vm start assignment image is required")
+	}
+	return tuple, true, nil
+}
+
+func (s *Service) startAssignedVM(tuple warm.Tuple) (string, error) {
+	localVMID, err := sandboxid.NewLocalVMID(s.cfg.Entropy)
+	if err != nil {
+		return "", err
+	}
+	tuple = tuple.Normalize()
+	// In the in-memory prototype, start completion implies readiness.
+	s.mu.Lock()
+	s.vms[localVMID] = &vmRecord{
+		state: vmStateReady,
+		tuple: tuple,
+	}
+	s.mu.Unlock()
+	s.cfg.Logger.Info(
+		"started assigned vm and marked ready",
+		"worker_id", s.cfg.WorkerID,
+		"local_vm_id", localVMID,
+		"virtualization", tuple.Virtualization,
+		"image", tuple.Image,
+		"cpu", tuple.CPU,
+	)
+	return localVMID, nil
 }
 
 func (s *Service) deregisterFromBroker(ctx context.Context) error {

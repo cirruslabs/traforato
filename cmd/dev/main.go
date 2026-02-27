@@ -5,7 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -183,7 +186,6 @@ func run(args []string) error {
 	runCtx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
 	go brokerSvc.RunLeaseSweeper(runCtx)
-	go workerSvc.RunRegistrationLoop(runCtx)
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -194,6 +196,22 @@ func run(args []string) error {
 			Logger:  brokerLogger,
 		})
 	}()
+
+	healthzURL, err := url.JoinPath(workerCfg.BrokerControlURL, "/healthz")
+	if err != nil {
+		return fmt.Errorf("build broker healthz url: %w", err)
+	}
+	healthCtx, healthCancel := context.WithTimeout(runCtx, 3*time.Second)
+	err = waitForHTTP200(healthCtx, &http.Client{Timeout: 500 * time.Millisecond}, healthzURL)
+	healthCancel()
+	if err != nil {
+		return fmt.Errorf("wait for broker healthz: %w", err)
+	}
+	if err := workerSvc.RegisterInitial(runCtx); err != nil {
+		return fmt.Errorf("initial worker registration failed: %w", err)
+	}
+	go workerSvc.RunRegistrationLoop(runCtx)
+
 	go func() {
 		errCh <- cmdutil.RunServer(runCtx, cmdutil.ServerConfig{
 			Name:    "worker",
@@ -245,4 +263,33 @@ func deriveBrokerBaseURL(listenAddr string) string {
 	}
 
 	return "http://" + net.JoinHostPort(host, port)
+}
+
+func waitForHTTP200(ctx context.Context, client *http.Client, target string) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			if err != nil {
+				return err
+			}
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }

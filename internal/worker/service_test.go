@@ -512,6 +512,135 @@ func TestRunRegistrationLoopRegistersWorker(t *testing.T) {
 	}
 }
 
+func TestRegisterInitialFailsWhenRegistrationRejected(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/workers/worker_a/registration" && r.Method == http.MethodPut {
+			http.Error(w, "nope", http.StatusServiceUnavailable)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer broker.Close()
+
+	svc := newTestService(Config{
+		BrokerID:            "broker_local",
+		WorkerID:            "worker_a",
+		BrokerControlURL:    broker.URL,
+		Hostname:            "worker-a.local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := svc.RegisterInitial(ctx)
+	if err == nil {
+		t.Fatal("expected initial registration to fail")
+	}
+}
+
+func TestRegisterInitialRequestsVMStartAndReportsReady(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	vmStartCalls := 0
+	events := make([]model.WorkerVMEvent, 0, 1)
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/internal/workers/worker_a/registration" && r.Method == http.MethodPut:
+			_ = json.NewEncoder(w).Encode(model.WorkerRegistrationResponse{
+				WorkerID:                 "worker_a",
+				LeaseTTLSeconds:          120,
+				HeartbeatIntervalSeconds: 30,
+				ExpiresAt:                now.Add(120 * time.Second),
+			})
+		case r.URL.Path == "/internal/workers/worker_a/vm-start" && r.Method == http.MethodPost:
+			mu.Lock()
+			vmStartCalls++
+			call := vmStartCalls
+			mu.Unlock()
+			if call == 1 {
+				_ = json.NewEncoder(w).Encode(model.WorkerVMStartAssignment{
+					Virtualization: "vetu",
+					Image:          "ubuntu:24.04",
+					CPU:            2,
+				})
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/internal/workers/worker_a/vm-events" && r.Method == http.MethodPost:
+			var event model.WorkerVMEvent
+			if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+				t.Fatalf("Decode vm event payload: %v", err)
+			}
+			mu.Lock()
+			events = append(events, event)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer broker.Close()
+
+	svc := newTestService(Config{
+		BrokerID:            "broker_local",
+		WorkerID:            "worker_a",
+		BrokerControlURL:    broker.URL,
+		Hostname:            "worker-a.local",
+		Validator:           auth.NewValidator("secret", "traforato", "traforato-api", func() time.Time { return now }),
+		Clock:               func() time.Time { return now },
+		InternalJWTSecret:   "secret",
+		InternalJWTIssuer:   "traforato",
+		InternalJWTAudience: "traforato-internal",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.RegisterInitial(ctx); err != nil {
+		t.Fatalf("RegisterInitial(): %v", err)
+	}
+
+	mu.Lock()
+	gotVMStartCalls := vmStartCalls
+	gotEvents := append([]model.WorkerVMEvent(nil), events...)
+	mu.Unlock()
+
+	if gotVMStartCalls != 1 {
+		t.Fatalf("expected one vm-start request, got %d", gotVMStartCalls)
+	}
+	if len(gotEvents) != 1 {
+		t.Fatalf("expected one ready vm event callback, got %d", len(gotEvents))
+	}
+	ready := gotEvents[0]
+	if ready.Event != model.WorkerVMEventReady {
+		t.Fatalf("expected ready vm event, got %q", ready.Event)
+	}
+	if ready.Virtualization != "vetu" || ready.Image != "ubuntu:24.04" || ready.CPU != 2 {
+		t.Fatalf("unexpected ready vm event tuple: %+v", ready)
+	}
+	if err := sandboxid.ValidateLocalVMID(ready.LocalVMID); err != nil {
+		t.Fatalf("expected valid local vm id in ready event, err=%v", err)
+	}
+
+	svc.mu.Lock()
+	readyCount := 0
+	for _, vm := range svc.vms {
+		vm.mu.Lock()
+		if vm.state == vmStateReady {
+			readyCount++
+		}
+		vm.mu.Unlock()
+	}
+	svc.mu.Unlock()
+	if readyCount != 1 {
+		t.Fatalf("expected exactly one ready vm tracked by worker, got %d", readyCount)
+	}
+}
+
 func TestDeregisterWorkerSendsDelete(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
