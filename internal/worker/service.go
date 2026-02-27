@@ -255,7 +255,12 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 			"status_code": strconv.Itoa(http.StatusUnauthorized),
 			"reason":      "jwt",
 		})
-		logger.Warn("authentication failed")
+		logger.Warn(
+			"authentication failed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"auth_error", err.Error(),
+		)
 		s.writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
